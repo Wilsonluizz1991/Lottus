@@ -1,7 +1,7 @@
 @extends('layouts.app')
 
 @section('content')
-<div class="container py-5">
+<div class="container pt-2 pb-5">
     <div class="row justify-content-center g-4">
         <div class="col-xl-10">
 
@@ -48,18 +48,30 @@
                                 </div>
                             @enderror
 
+                            @error('quantidade')
+                                <div class="alert alert-danger">
+                                    {{ $message }}
+                                </div>
+                            @enderror
+
                             @if($ultimoConcurso)
                                 <div class="alert alert-info border-0 shadow-sm">
-                                    <div class="fw-semibold mb-1">Base de análise do Lottus</div>
-
-                                    <div>
-                                        O Lottus não se baseia apenas no último sorteio. A geração dos jogos considera
-                                        o comportamento das dezenas em <strong>até 500 concursos anteriores</strong>,
-                                        cruzando padrões de curto, médio e longo prazo para montar combinações
-                                        mais consistentes.
+                                    <div class="fw-semibold mb-2 fs-5">
+                                        Base de análise do Lottus
                                     </div>
 
-                                    <div class="mt-2 small">
+                                    <div class="mb-2">
+                                        O Lottus não gera jogos no aleatório. Cada combinação é construída com base
+                                        na análise de <strong>até 500 concursos anteriores</strong>, cruzando padrões
+                                        de curto, médio e longo prazo para buscar jogos mais equilibrados e consistentes.
+                                    </div>
+
+                                    <div class="small text-muted mb-2">
+                                        Isso significa que o sistema leva em conta o comportamento real das dezenas ao longo do tempo,
+                                        e não apenas o resultado mais recente.
+                                    </div>
+
+                                    <div class="small">
                                         Último concurso disponível:
                                         <strong>{{ $ultimoConcurso->concurso }}</strong>
                                         ({{ optional($ultimoConcurso->data_sorteio)->format('d/m/Y') }})
@@ -73,10 +85,10 @@
                                 <div class="card-body p-4">
                                     <h2 class="h4 fw-bold mb-3">Gerar jogo</h2>
                                     <p class="text-muted mb-3">
-                                        Informe seu e-mail para gerar seu jogo e liberar após a confirmação do pagamento.
+                                        Informe seu e-mail, escolha a quantidade de apostas e gere seus jogos para liberação após a confirmação do pagamento.
                                     </p>
 
-                                    <form method="POST" action="{{ route('jogos.gerar') }}">
+                                    <form method="POST" action="{{ route('jogos.gerar') }}" id="form-gerar-jogo">
                                         @csrf
 
                                         <div class="mb-3">
@@ -91,9 +103,25 @@
                                             >
                                         </div>
 
+                                        <div class="mb-3">
+                                            <label class="form-label fw-semibold">Quantidade de apostas</label>
+                                            <select name="quantidade" id="quantidade" class="form-select form-select-lg" required>
+                                                @for($i = 1; $i <= 10; $i++)
+                                                    <option value="{{ $i }}" {{ old('quantidade', 1) == $i ? 'selected' : '' }}>
+                                                        {{ $i }} {{ $i === 1 ? 'aposta' : 'apostas' }}
+                                                    </option>
+                                                @endfor
+                                            </select>
+                                        </div>
+
                                         <div class="border rounded bg-white p-3 mb-3">
-                                            <div class="small text-muted mb-1">Valor do jogo</div>
-                                            <div class="fs-3 fw-bold text-primary">R$ {{ $preco }}</div>
+                                            <div class="small text-muted mb-1">Valor por aposta</div>
+                                            <div class="fs-5 fw-semibold mb-2">R$ {{ $preco }}</div>
+
+                                            <div class="small text-muted mb-1">Valor total</div>
+                                            <div class="fs-3 fw-bold text-primary" id="valor-total">
+                                                R$ {{ number_format($valorUnitario, 2, ',', '.') }}
+                                            </div>
                                         </div>
 
                                         <button class="btn btn-primary btn-lg w-100 py-3 fw-semibold shadow-sm" type="submit">
@@ -102,7 +130,7 @@
                                     </form>
 
                                     <p class="small text-muted mt-3 mb-0">
-                                        O jogo é gerado primeiro e liberado somente após a confirmação do pagamento.
+                                        Os jogos são gerados primeiro e liberados somente após a confirmação do pagamento.
                                     </p>
                                 </div>
                             </div>
@@ -110,6 +138,52 @@
                     </div>
                 </div>
             </div>
+
+
+            @if($ultimoConcurso)
+                <div class="card border-0 shadow-sm mb-4">
+                    <div class="card-body p-4 p-md-5">
+                        <h2 class="h3 fw-bold mb-3">Último resultado oficial</h2>
+                        <p class="text-muted mb-4">
+                            Este é o resultado oficial mais recente disponível na base do Lottus. Ele é usado como
+                            referência mais atual dentro de uma análise estatística muito mais ampla.
+                        </p>
+
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-4">
+                                <div class="border rounded-4 p-3 bg-light h-100">
+                                    <small class="text-muted d-block">Concurso</small>
+                                    <strong>{{ $ultimoConcurso->concurso }}</strong>
+                                </div>
+                            </div>
+
+                            <div class="col-md-4">
+                                <div class="border rounded-4 p-3 bg-light h-100">
+                                    <small class="text-muted d-block">Data da apuração</small>
+                                    <strong>{{ optional($ultimoConcurso->data_sorteio)->format('d/m/Y') }}</strong>
+                                </div>
+                            </div>
+
+                            <div class="col-md-4">
+                                <div class="border rounded-4 p-3 bg-light h-100">
+                                    <small class="text-muted d-block">Origem da base</small>
+                                    <strong>
+                                        {{ $ultimoConcurso->informado_manualmente ? 'Cadastro manual' : 'API oficial' }}
+                                    </strong>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="d-flex flex-wrap gap-2">
+                            @foreach($ultimoConcurso->dezenas as $dezena)
+                                <span class="badge rounded-pill text-bg-primary px-3 py-2 fs-6">
+                                    {{ str_pad($dezena, 2, '0', STR_PAD_LEFT) }}
+                                </span>
+                            @endforeach
+                        </div>
+                    </div>
+                </div>
+            @endif
 
 
             <div class="card border-0 shadow-sm mb-4">
@@ -227,4 +301,23 @@
         </div>
     </div>
 </div>
-@endsection 
+
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const quantidade = document.getElementById('quantidade');
+        const valorTotal = document.getElementById('valor-total');
+        const valorUnitario = {{ json_encode((float) $valorUnitario) }};
+
+        function atualizarValorTotal() {
+            const qtd = parseInt(quantidade.value || 1, 10);
+            const total = (qtd * valorUnitario).toFixed(2).replace('.', ',');
+            valorTotal.textContent = 'R$ ' + total;
+        }
+
+        if (quantidade && valorTotal) {
+            quantidade.addEventListener('change', atualizarValorTotal);
+            atualizarValorTotal();
+        }
+    });
+</script>
+@endsection

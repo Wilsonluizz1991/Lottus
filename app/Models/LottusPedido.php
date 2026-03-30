@@ -14,6 +14,7 @@ class LottusPedido extends Model
     protected $fillable = [
         'token',
         'email',
+        'quantidade',
         'concurso_base_id',
         'valor',
         'jogo',
