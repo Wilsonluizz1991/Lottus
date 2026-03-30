@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\LottusController;
+use App\Http\Controllers\MercadoPagoWebhookController;
+use App\Http\Controllers\PublicLottusController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -22,5 +24,12 @@ Route::middleware('auth')->group(function () {
     Route::post('/lottus/salvar-resultado-e-gerar', [LottusController::class, 'salvarResultadoEGerar'])->name('lottus.salvar-resultado-e-gerar');
 
 });
+
+Route::get('/', [PublicLottusController::class, 'home'])->name('home');
+Route::post('/gerar-jogo', [PublicLottusController::class, 'gerarJogo'])->name('jogos.gerar');
+Route::get('/pedido/{token}', [PublicLottusController::class, 'showPedido'])->name('pedido.show');
+
+Route::post('/pagamentos/mercadopago/webhook', [MercadoPagoWebhookController::class, 'handle'])
+    ->name('pagamentos.mercadopago.webhook');
 
 require __DIR__.'/auth.php';
