@@ -29,4 +29,9 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    public function lotofacilApostas()
+    {
+        return $this->hasMany(\App\Models\LotofacilAposta::class);
+    }
 }
