@@ -33,3 +33,37 @@ Route::post('/pagamentos/mercadopago/webhook', [MercadoPagoWebhookController::cl
     ->name('pagamentos.mercadopago.webhook');
 
 require __DIR__.'/auth.php';
+
+Route::prefix('pagamentos/mercadopago')->group(function () {
+
+    Route::get('/success', function (\Illuminate\Http\Request $request) {
+        return view('payments.return', [
+            'type' => 'success',
+            'query' => $request->query()
+        ]);
+    })->name('pagamentos.mercadopago.success');
+
+    Route::get('/failure', function (\Illuminate\Http\Request $request) {
+        return view('payments.return', [
+            'type' => 'failure',
+            'query' => $request->query()
+        ]);
+    })->name('pagamentos.mercadopago.failure');
+
+    Route::get('/pending', function (\Illuminate\Http\Request $request) {
+        return view('payments.return', [
+            'type' => 'pending',
+            'query' => $request->query()
+        ]);
+    })->name('pagamentos.mercadopago.pending');
+
+    Route::get('/pagamento/{token}', function ($token) {
+    $pedido = \App\Models\LottusPedido::where('token', $token)->firstOrFail();
+
+    $checkout = app(\App\Services\MercadoPagoCheckoutService::class)
+        ->criarCheckout($pedido);
+
+    return redirect()->away($checkout['init_point']);
+})->name('pagamento.checkout');
+
+});

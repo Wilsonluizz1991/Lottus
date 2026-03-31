@@ -42,25 +42,13 @@
                         </div>
                     </div>
 
-                    <div class="mb-4">
-                        <p class="mb-1">
-                            <strong>Base estatística utilizada:</strong>
-                            este pedido foi construído a partir da análise de <strong>até 500 concursos anteriores</strong>,
-                            combinando padrões de frequência, recência, equilíbrio e distribuição das dezenas.
-                        </p>
-
-                        <p class="mb-0 text-muted">
-                            O concurso {{ $pedido->concursoBase->concurso ?? '-' }} é apenas a referência mais recente dentro dessa base estatística.
-                        </p>
-                    </div>
-
                     @if($pedido->isPaid())
                         <div class="alert alert-success">
                             Pagamento confirmado. Seus jogos foram liberados.
                         </div>
                     @else
                         <div class="alert alert-info">
-                            Seus jogos já foram gerados e estão reservados. Eles serão liberados assim que o pagamento for confirmado.
+                            Seus jogos estão reservados. Finalize o pagamento para liberar o conteúdo completo.
                         </div>
                     @endif
 
@@ -81,47 +69,11 @@
                                                     </span>
                                                 @endforeach
                                             </div>
-
-                                            @php
-                                                $analise = $pedido->analise[$index] ?? null;
-                                            @endphp
-
-                                            @if($analise)
-                                                <div class="row g-3">
-                                                    <div class="col-6">
-                                                        <div class="border rounded p-3 bg-light h-100">
-                                                            <small class="text-muted d-block">Pares / Ímpares</small>
-                                                            <strong>{{ $analise['pares'] ?? '-' }} / {{ $analise['impares'] ?? '-' }}</strong>
-                                                        </div>
-                                                    </div>
-
-                                                    <div class="col-6">
-                                                        <div class="border rounded p-3 bg-light h-100">
-                                                            <small class="text-muted d-block">Soma</small>
-                                                            <strong>{{ $analise['soma'] ?? '-' }}</strong>
-                                                        </div>
-                                                    </div>
-
-                                                    <div class="col-6">
-                                                        <div class="border rounded p-3 bg-light h-100">
-                                                            <small class="text-muted d-block">Quentes</small>
-                                                            <strong>{{ $analise['quentes'] ?? '-' }}</strong>
-                                                        </div>
-                                                    </div>
-
-                                                    <div class="col-6">
-                                                        <div class="border rounded p-3 bg-light h-100">
-                                                            <small class="text-muted d-block">Atrasadas</small>
-                                                            <strong>{{ $analise['atrasadas'] ?? '-' }}</strong>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            @endif
                                         </div>
 
                                         @unless($pedido->isPaid())
                                             <div class="alert alert-warning mt-4 mb-0">
-                                                Este jogo será exibido por completo após a confirmação do pagamento.
+                                                Este jogo será exibido após o pagamento.
                                             </div>
                                         @endunless
                                     </div>
@@ -130,13 +82,15 @@
                         @endforeach
                     </div>
 
+                    {{-- 🔥 BOTÃO REAL DE PAGAMENTO --}}
                     @unless($pedido->isPaid())
-                        <button class="btn btn-primary btn-lg" data-bs-toggle="modal" data-bs-target="#modalPagamento">
-                            Ver opções de pagamento
-                        </button>
+                        <a href="{{ route('pagamento.checkout', $pedido->token) }}"
+                           class="btn btn-primary btn-lg">
+                            Pagar agora
+                        </a>
 
                         <p class="small text-muted mt-3 mb-0">
-                            Esta página atualiza automaticamente.
+                            Após o pagamento, esta página será atualizada automaticamente.
                         </p>
                     @endunless
                 </div>
@@ -145,45 +99,7 @@
     </div>
 </div>
 
-@if(!$pedido->isPaid())
-<div class="modal fade" id="modalPagamento" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Pagamento em configuração</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
-            </div>
-            <div class="modal-body">
-                <p class="mb-3">
-                    Seus jogos já foram gerados e estão reservados.
-                </p>
-
-                <p class="mb-3">
-                    Total do pedido: <strong>R$ {{ number_format($pedido->valor, 2, ',', '.') }}</strong>
-                </p>
-
-                <div class="alert alert-warning mb-0">
-                    A integração com Pix e cartão será conectada na próxima etapa.
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-@endif
-
-@if(session('abrir_modal_pagamento'))
-<script>
-    window.addEventListener('load', function () {
-        const modalElement = document.getElementById('modalPagamento');
-
-        if (modalElement && window.bootstrap) {
-            const modal = new window.bootstrap.Modal(modalElement);
-            modal.show();
-        }
-    });
-</script>
-@endif
-
+{{-- 🔥 AUTO REFRESH --}}
 @if(!$pedido->isPaid())
 <script>
     setTimeout(function () {
