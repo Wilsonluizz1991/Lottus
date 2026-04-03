@@ -48,7 +48,7 @@
                         </div>
                     @else
                         <div class="alert alert-info">
-                            Seus jogos estão reservados. Finalize o pagamento para liberar o conteúdo completo.
+                            Seus jogos estão reservados. A liberação do conteúdo completo acontecerá quando o serviço de pagamento estiver disponível.
                         </div>
                     @endif
 
@@ -73,7 +73,7 @@
 
                                         @unless($pedido->isPaid())
                                             <div class="alert alert-warning mt-4 mb-0">
-                                                Este jogo será exibido após o pagamento.
+                                                Este jogo será exibido após a liberação do serviço de pagamento.
                                             </div>
                                         @endunless
                                     </div>
@@ -82,15 +82,13 @@
                         @endforeach
                     </div>
 
-                    {{-- 🔥 BOTÃO REAL DE PAGAMENTO --}}
                     @unless($pedido->isPaid())
-                        <a href="{{ route('pagamento.checkout', $pedido->token) }}"
-                           class="btn btn-primary btn-lg">
+                        <button type="button" class="btn btn-primary btn-lg" id="btn-pagar-agora">
                             Pagar agora
-                        </a>
+                        </button>
 
                         <p class="small text-muted mt-3 mb-0">
-                            Após o pagamento, esta página será atualizada automaticamente.
+                            O serviço de pagamento estará disponível em breve.
                         </p>
                     @endunless
                 </div>
@@ -99,14 +97,19 @@
     </div>
 </div>
 
-{{-- 🔥 AUTO REFRESH --}}
-@if(!$pedido->isPaid())
+@unless($pedido->isPaid())
 <script>
-    setTimeout(function () {
-        window.location.reload();
-    }, 10000);
+    document.addEventListener('DOMContentLoaded', function () {
+        const btnPagarAgora = document.getElementById('btn-pagar-agora');
+
+        if (btnPagarAgora) {
+            btnPagarAgora.addEventListener('click', function () {
+                alert('Serviço ainda não disponível.');
+            });
+        }
+    });
 </script>
-@endif
+@endunless
 
 <style>
     .jogo-bloqueado {
