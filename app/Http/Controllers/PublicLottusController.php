@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\LottusPedido;
 use App\Models\LotofacilConcurso;
 use App\Services\LottusGeradorService;
-use App\Services\MercadoPagoCheckoutService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -14,7 +13,6 @@ class PublicLottusController extends Controller
 {
     public function __construct(
         private readonly LottusGeradorService $geradorService,
-        private readonly MercadoPagoCheckoutService $mercadoPagoCheckoutService,
     ) {
     }
 
@@ -56,50 +54,22 @@ class PublicLottusController extends Controller
             $analises[] = $resultado['analise'];
         }
 
-        $externalReference = 'lottus_' . Str::uuid();
-
         $pedido = LottusPedido::create([
-            'token' => (string) Str::uuid(),
-            'email' => $request->email,
-            'quantidade' => $quantidade,
-            'concurso_base_id' => $concursoBase->id,
-            'valor' => $valorTotal,
-            'jogo' => $jogos,
-            'analise' => $analises,
-            'status' => 'aguardando_pagamento',
-            'gateway' => 'mercadopago',
-            'external_reference' => $externalReference,
+        'token' => (string) Str::uuid(),
+        'email' => $request->email,
+        'quantidade' => $quantidade,
+        'concurso_base_id' => $concursoBase->id,
+        'valor' => $valorTotal,
+        'jogo' => $jogos,
+        'analise' => $analises,
+        'status' => 'aguardando_pagamento',
+        'gateway' => 'indisponivel',
+        'external_reference' => 'lottus_' . Str::uuid(),
         ]);
 
-        try {
-            // ✅ USA O MÉTODO CORRETO DO SERVICE
-            $checkout = $this->mercadoPagoCheckoutService->criarCheckout($pedido);
-
-            // salva preference_id
-            $pedido->update([
-                'preference_id' => $checkout['preference_id'],
-            ]);
-
-            // redireciona para o checkout
-            $url = $checkout['init_point'] ?? $checkout['sandbox_init_point'] ?? null;
-
-            if (!$url) {
-                throw new \Exception('Não foi possível gerar URL de pagamento.');
-            }
-
-            return redirect()->away($url);
-
-        } catch (\Throwable $e) {
-            // log opcional
-            \Log::error('Erro ao criar checkout Mercado Pago', [
-                'pedido_id' => $pedido->id,
-                'erro' => $e->getMessage(),
-            ]);
-
-            return redirect()
-                ->route('pedido.show', $pedido->token)
-                ->with('error', 'Erro ao iniciar pagamento. Tente novamente.');
-        }
+        return redirect()
+            ->route('pedido.show', $pedido->token)
+            ->with('success', 'Pedido gerado com sucesso.');
     }
 
     public function showPedido(string $token)
