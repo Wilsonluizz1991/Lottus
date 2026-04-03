@@ -23,6 +23,11 @@ class SincronizarLotofacilCaixa extends Command
         try {
             $resultado = $this->caixaLotofacilService->buscarUltimoResultado();
 
+            if (empty($resultado) || !isset($resultado['numero'], $resultado['dataApuracao'], $resultado['listaDezenas'])) {
+                $this->error('A API retornou dados incompletos para o resultado da Lotofácil.');
+                return self::FAILURE;
+            }
+
             $numeroConcurso = (int) $resultado['numero'];
 
             $concursoExistente = LotofacilConcurso::where('concurso', $numeroConcurso)->first();
@@ -40,13 +45,18 @@ class SincronizarLotofacilCaixa extends Command
                 ->values()
                 ->all();
 
+            if (count($dezenas) !== 15) {
+                $this->error("O concurso {$numeroConcurso} retornou uma quantidade inválida de dezenas.");
+                return self::FAILURE;
+            }
+
             $rateios = collect($resultado['listaRateioPremio'] ?? []);
 
-            $faixa15 = $rateios->firstWhere('faixa', 1);
-            $faixa14 = $rateios->firstWhere('faixa', 2);
-            $faixa13 = $rateios->firstWhere('faixa', 3);
-            $faixa12 = $rateios->firstWhere('faixa', 4);
-            $faixa11 = $rateios->firstWhere('faixa', 5);
+            $faixa15 = $rateios->firstWhere('faixa', 1) ?? [];
+            $faixa14 = $rateios->firstWhere('faixa', 2) ?? [];
+            $faixa13 = $rateios->firstWhere('faixa', 3) ?? [];
+            $faixa12 = $rateios->firstWhere('faixa', 4) ?? [];
+            $faixa11 = $rateios->firstWhere('faixa', 5) ?? [];
 
             LotofacilConcurso::create([
                 'concurso' => $numeroConcurso,
@@ -68,27 +78,28 @@ class SincronizarLotofacilCaixa extends Command
                 'bola14' => $dezenas[13],
                 'bola15' => $dezenas[14],
 
-                'ganhadores_15_acertos' => $faixa15['numeroDeGanhadores'] ?? null,
-                'rateio_15_acertos' => isset($faixa15['valorPremio']) ? (string) $faixa15['valorPremio'] : null,
+                'ganhadores_15_acertos' => (int) ($faixa15['numeroDeGanhadores'] ?? 0),
+                'rateio_15_acertos' => (float) ($faixa15['valorPremio'] ?? 0),
 
-                'ganhadores_14_acertos' => $faixa14['numeroDeGanhadores'] ?? null,
-                'rateio_14_acertos' => isset($faixa14['valorPremio']) ? (string) $faixa14['valorPremio'] : null,
+                'ganhadores_14_acertos' => (int) ($faixa14['numeroDeGanhadores'] ?? 0),
+                'rateio_14_acertos' => (float) ($faixa14['valorPremio'] ?? 0),
 
-                'ganhadores_13_acertos' => $faixa13['numeroDeGanhadores'] ?? null,
-                'rateio_13_acertos' => isset($faixa13['valorPremio']) ? (string) $faixa13['valorPremio'] : null,
+                'ganhadores_13_acertos' => (int) ($faixa13['numeroDeGanhadores'] ?? 0),
+                'rateio_13_acertos' => (float) ($faixa13['valorPremio'] ?? 0),
 
-                'ganhadores_12_acertos' => $faixa12['numeroDeGanhadores'] ?? null,
-                'rateio_12_acertos' => isset($faixa12['valorPremio']) ? (string) $faixa12['valorPremio'] : null,
+                'ganhadores_12_acertos' => (int) ($faixa12['numeroDeGanhadores'] ?? 0),
+                'rateio_12_acertos' => (float) ($faixa12['valorPremio'] ?? 0),
 
-                'ganhadores_11_acertos' => $faixa11['numeroDeGanhadores'] ?? null,
-                'rateio_11_acertos' => isset($faixa11['valorPremio']) ? (string) $faixa11['valorPremio'] : null,
+                'ganhadores_11_acertos' => (int) ($faixa11['numeroDeGanhadores'] ?? 0),
+                'rateio_11_acertos' => (float) ($faixa11['valorPremio'] ?? 0),
 
                 'cidade_uf' => $resultado['nomeMunicipioUFSorteio'] ?? null,
                 'observacao' => $resultado['observacao'] ?? null,
-                'arrecadacao_total' => isset($resultado['valorArrecadado']) ? (string) $resultado['valorArrecadado'] : null,
-                'estimativa_premio' => isset($resultado['valorEstimadoProximoConcurso']) ? (string) $resultado['valorEstimadoProximoConcurso'] : null,
-                'acumulado_15_acertos' => isset($resultado['valorAcumuladoProximoConcurso']) ? (string) $resultado['valorAcumuladoProximoConcurso'] : null,
-                'acumulado_sorteio_especial_lotofacil_independencia' => isset($resultado['valorAcumuladoConcursoEspecial']) ? (string) $resultado['valorAcumuladoConcursoEspecial'] : null,
+
+                'arrecadacao_total' => (float) ($resultado['valorArrecadado'] ?? 0),
+                'estimativa_premio' => (float) ($resultado['valorEstimadoProximoConcurso'] ?? 0),
+                'acumulado_15_acertos' => (float) ($resultado['valorAcumuladoProximoConcurso'] ?? 0),
+                'acumulado_sorteio_especial_lotofacil_independencia' => (float) ($resultado['valorAcumuladoConcursoEspecial'] ?? 0),
 
                 'informado_manualmente' => false,
             ]);
