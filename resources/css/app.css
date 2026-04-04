@@ -9,7 +9,7 @@ body.lottus-sidebar-open {
 }
 
 .lottus-main-content {
-    transition: padding-left .28s ease;
+    transition: padding-left .28s ease, padding-top .28s ease;
 }
 
 .lottus-section-anchor {
@@ -64,9 +64,9 @@ body.lottus-sidebar-open {
 /* SIDEBAR - CORREÇÃO DE POSICIONAMENTO */
 .lottus-sidebar {
     position: fixed;
-    top: 80px; /* Aumentado para não invadir o topo */
+    top: 80px;
     left: 24px;
-    height: calc(100vh - 120px); /* Garante que ela tenha altura sem sumir no rodapé */
+    height: calc(100vh - 120px);
     width: 72px;
     border-radius: 28px;
     background: rgba(255, 255, 255, 0.78);
@@ -708,13 +708,20 @@ body.lottus-sidebar-open {
 @media (max-width: 1199.98px) {
     .lottus-sidebar-mobile-toggle {
         display: inline-flex;
+        top: 8px;
+        left: 14px;
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        box-shadow: none;
+        z-index: 1050;
     }
 
     .lottus-sidebar {
-        top: 80px; /* Correção para o mobile também */
+        top: 60px;
         left: 16px;
         bottom: 16px;
-        height: calc(100vh - 100px);
+        height: calc(100vh - 76px);
         width: 238px;
         transform: translateX(-120%);
     }
@@ -731,7 +738,30 @@ body.lottus-sidebar-open {
 
     .lottus-main-content {
         padding-left: 0;
-        padding-top: 4.4rem;
+        padding-top: 1rem;
+    }
+
+    /* mantém a barra superior com largura total */
+    header,
+    .topbar,
+    .navbar {
+        position: relative;
+        width: 100%;
+        min-width: 100%;
+        left: 0;
+        right: 0;
+    }
+
+    /* centraliza o título sem mexer na largura da barra */
+    .navbar-brand,
+    .topbar h1,
+    header h1 {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        margin: 0;
+        text-align: center;
+        white-space: nowrap;
     }
 }
 
@@ -824,4 +854,25 @@ body.lottus-sidebar-open {
     .gerando-titulo {
         font-size: 1.15rem;
     }
+}
+
+@media (max-width: 1199.98px) {
+
+    header,
+    .topbar,
+    .navbar {
+        min-height: 64px;
+        padding-top: 0.8rem;
+        padding-bottom: 0.8rem;
+        display: flex;
+        align-items: center;
+    }
+
+    .navbar-brand,
+    .topbar h1,
+    header h1 {
+        font-size: 1.2rem;
+        line-height: 1;
+    }
+
 }
