@@ -55,10 +55,12 @@ class MercadoPagoCheckoutService
             $appUrl = rtrim((string) config('services.mercado_pago.app_url'), '/');
 
             if (! empty($appUrl) && Str::startsWith($appUrl, 'https://')) {
+                $pedidoUrl = $appUrl . '/pedido/' . $pedido->token;
+
                 $request['back_urls'] = [
-                    'success' => $appUrl . '/pagamentos/mercado-pago/success',
-                    'failure' => $appUrl . '/pagamentos/mercado-pago/failure',
-                    'pending' => $appUrl . '/pagamentos/mercado-pago/pending',
+                    'success' => $pedidoUrl,
+                    'failure' => $pedidoUrl,
+                    'pending' => $pedidoUrl,
                 ];
 
                 $request['auto_return'] = 'approved';

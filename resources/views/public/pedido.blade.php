@@ -108,12 +108,12 @@
 
                     @unless($pedido->isPaid())
                         @if(!empty($checkoutUrl))
-                            <a href="{{ $checkoutUrl }}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg">
+                            <a href="{{ $checkoutUrl }}" class="btn btn-primary btn-lg">
                                 Pagar agora
                             </a>
 
                             <p class="small text-muted mt-3 mb-0">
-                                O pagamento será aberto em uma nova aba. Esta página será atualizada automaticamente assim que o pagamento for confirmado.
+                                Após a confirmação do pagamento, você será redirecionado automaticamente de volta para esta página.
                             </p>
                         @else
                             <div class="alert alert-warning mb-0">
