@@ -7,6 +7,7 @@ use App\Models\LotofacilConcurso;
 use App\Services\LottusGeradorService;
 use App\Services\MercadoPagoCheckoutService;
 use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -98,6 +99,17 @@ class PublicLottusController extends Controller
         return view('public.pedido', [
             'pedido' => $pedido,
             'checkoutUrl' => $checkoutUrl,
+        ]);
+    }
+
+    public function statusPedido(string $token): JsonResponse
+    {
+        $pedido = LottusPedido::where('token', $token)->firstOrFail();
+
+        return response()->json([
+            'status' => $pedido->status,
+            'payment_status' => $pedido->payment_status,
+            'is_paid' => $pedido->isPaid(),
         ]);
     }
 

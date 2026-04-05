@@ -8,6 +8,12 @@
                 <div class="card-body p-4 p-md-5">
                     <h1 class="h2 fw-bold mb-4">Pedido do jogo</h1>
 
+                    @if(session('success'))
+                        <div class="alert alert-success">
+                            {{ session('success') }}
+                        </div>
+                    @endif
+
                     @if(session('error'))
                         <div class="alert alert-danger">
                             {{ session('error') }}
@@ -24,11 +30,13 @@
                         <div class="col-md-3">
                             <div class="border rounded-4 p-3 bg-light h-100">
                                 <small class="text-muted d-block">Status</small>
-                                @if($pedido->status === 'pago')
-                                    <strong class="text-success">Pagamento aprovado</strong>
-                                @else
-                                    <strong class="text-warning">Aguardando pagamento</strong>
-                                @endif
+                                <div id="pedido-status-bloco">
+                                    @if($pedido->status === 'pago')
+                                        <strong class="text-success">Pagamento aprovado</strong>
+                                    @else
+                                        <strong class="text-warning">Aguardando pagamento</strong>
+                                    @endif
+                                </div>
                             </div>
                         </div>
 
@@ -54,15 +62,17 @@
                         </div>
                     </div>
 
-                    @if($pedido->isPaid())
-                        <div class="alert alert-success">
-                            Pagamento confirmado. Seus jogos foram liberados.
-                        </div>
-                    @else
-                        <div class="alert alert-info">
-                            Seus jogos estão reservados. Efetue o pagamento para liberar o conteúdo completo.
-                        </div>
-                    @endif
+                    <div id="pedido-alerta-pagamento">
+                        @if($pedido->isPaid())
+                            <div class="alert alert-success">
+                                Pagamento confirmado. Seus jogos foram liberados.
+                            </div>
+                        @else
+                            <div class="alert alert-info">
+                                Seus jogos estão reservados. Efetue o pagamento para liberar o conteúdo completo.
+                            </div>
+                        @endif
+                    </div>
 
                     <div class="row g-4 mb-4">
                         @foreach(($pedido->jogo ?? []) as $index => $jogo)
@@ -73,7 +83,7 @@
                                             Jogo {{ $index + 1 }}
                                         </h2>
 
-                                        <div class="{{ $pedido->isPaid() ? '' : 'jogo-bloqueado' }}">
+                                        <div class="{{ $pedido->isPaid() ? '' : 'jogo-bloqueado' }}" data-jogo-bloqueado>
                                             <div class="d-flex flex-wrap gap-2 mb-4">
                                                 @foreach($jogo as $dezena)
                                                     <span class="badge rounded-pill text-bg-primary px-3 py-2 fs-6">
@@ -83,11 +93,13 @@
                                             </div>
                                         </div>
 
-                                        @unless($pedido->isPaid())
-                                            <div class="alert alert-warning mt-4 mb-0">
-                                                Este jogo será exibido após a confirmação do pagamento.
-                                            </div>
-                                        @endunless
+                                        <div class="pedido-alerta-jogo">
+                                            @unless($pedido->isPaid())
+                                                <div class="alert alert-warning mt-4 mb-0">
+                                                    Este jogo será exibido após a confirmação do pagamento.
+                                                </div>
+                                            @endunless
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -95,13 +107,19 @@
                     </div>
 
                     @unless($pedido->isPaid())
-                        <a href="{{ $checkoutUrl }}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">
-                            Pagar agora
-                        </a>
+                        @if(!empty($checkoutUrl))
+                            <a href="{{ $checkoutUrl }}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg">
+                                Pagar agora
+                            </a>
 
-                        <p class="small text-muted mt-3 mb-0">
-                            Você será redirecionado para o ambiente seguro do Mercado Pago.
-                        </p>
+                            <p class="small text-muted mt-3 mb-0">
+                                O pagamento será aberto em uma nova aba. Esta página será atualizada automaticamente assim que o pagamento for confirmado.
+                            </p>
+                        @else
+                            <div class="alert alert-warning mb-0">
+                                Não foi possível gerar o link de pagamento neste momento. Atualize a página e tente novamente.
+                            </div>
+                        @endif
                     @endunless
                 </div>
             </div>
@@ -116,4 +134,45 @@
         user-select: none;
     }
 </style>
+
+@if(!$pedido->isPaid())
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const statusUrl = @json(route('pedido.status', $pedido->token));
+        let pedidoJaFoiPago = false;
+
+        async function verificarStatusPedido() {
+            if (pedidoJaFoiPago) {
+                return;
+            }
+
+            try {
+                const response = await fetch(statusUrl, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    cache: 'no-store',
+                });
+
+                if (!response.ok) {
+                    return;
+                }
+
+                const data = await response.json();
+
+                if (data.is_paid) {
+                    pedidoJaFoiPago = true;
+                    window.location.reload();
+                }
+            } catch (error) {
+                console.error('Erro ao verificar status do pedido:', error);
+            }
+        }
+
+        setInterval(verificarStatusPedido, 5000);
+    });
+</script>
+@endif
 @endsection

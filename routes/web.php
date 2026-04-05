@@ -24,6 +24,7 @@ Route::middleware('auth')->group(function () {
 Route::get('/', [PublicLottusController::class, 'home'])->name('home');
 Route::post('/gerar-jogo', [PublicLottusController::class, 'gerarJogo'])->name('jogos.gerar');
 Route::get('/pedido/{token}', [PublicLottusController::class, 'showPedido'])->name('pedido.show');
+Route::get('/pedido/{token}/status', [PublicLottusController::class, 'statusPedido'])->name('pedido.status');
 
 Route::get('/pedido/{token}/pagar', [MercadoPagoCheckoutController::class, 'pagar'])
     ->name('pedido.pagar');
