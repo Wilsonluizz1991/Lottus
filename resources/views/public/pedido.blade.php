@@ -8,6 +8,18 @@
                 <div class="card-body p-4 p-md-5">
                     <h1 class="h2 fw-bold mb-4">Pedido do jogo</h1>
 
+                    @if(session('error'))
+                        <div class="alert alert-danger">
+                            {{ session('error') }}
+                        </div>
+                    @endif
+
+                    @if(session('info'))
+                        <div class="alert alert-info">
+                            {{ session('info') }}
+                        </div>
+                    @endif
+
                     <div class="row g-3 mb-4">
                         <div class="col-md-3">
                             <div class="border rounded-4 p-3 bg-light h-100">
@@ -48,7 +60,7 @@
                         </div>
                     @else
                         <div class="alert alert-info">
-                            Seus jogos estão reservados. A liberação do conteúdo completo acontecerá quando o serviço de pagamento estiver disponível.
+                            Seus jogos estão reservados. Efetue o pagamento para liberar o conteúdo completo.
                         </div>
                     @endif
 
@@ -73,7 +85,7 @@
 
                                         @unless($pedido->isPaid())
                                             <div class="alert alert-warning mt-4 mb-0">
-                                                Este jogo será exibido após a liberação do serviço de pagamento.
+                                                Este jogo será exibido após a confirmação do pagamento.
                                             </div>
                                         @endunless
                                     </div>
@@ -83,12 +95,12 @@
                     </div>
 
                     @unless($pedido->isPaid())
-                        <button type="button" class="btn btn-primary btn-lg" id="btn-pagar-agora">
+                        <a href="{{ $checkoutUrl }}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">
                             Pagar agora
-                        </button>
+                        </a>
 
                         <p class="small text-muted mt-3 mb-0">
-                            O serviço de pagamento estará disponível em breve.
+                            Você será redirecionado para o ambiente seguro do Mercado Pago.
                         </p>
                     @endunless
                 </div>
@@ -96,20 +108,6 @@
         </div>
     </div>
 </div>
-
-@unless($pedido->isPaid())
-<script>
-    document.addEventListener('DOMContentLoaded', function () {
-        const btnPagarAgora = document.getElementById('btn-pagar-agora');
-
-        if (btnPagarAgora) {
-            btnPagarAgora.addEventListener('click', function () {
-                alert('Serviço ainda não disponível.');
-            });
-        }
-    });
-</script>
-@endunless
 
 <style>
     .jogo-bloqueado {

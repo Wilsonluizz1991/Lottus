@@ -1,13 +1,11 @@
 <?php
 
-use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\LottusController;
+use App\Http\Controllers\MercadoPagoCheckoutController;
+use App\Http\Controllers\MercadoPagoWebhookController;
+use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PublicLottusController;
 use Illuminate\Support\Facades\Route;
-
-Route::get('/', function () {
-    return view('welcome');
-});
 
 Route::get('/dashboard', function () {
     return view('dashboard');
@@ -26,5 +24,11 @@ Route::middleware('auth')->group(function () {
 Route::get('/', [PublicLottusController::class, 'home'])->name('home');
 Route::post('/gerar-jogo', [PublicLottusController::class, 'gerarJogo'])->name('jogos.gerar');
 Route::get('/pedido/{token}', [PublicLottusController::class, 'showPedido'])->name('pedido.show');
+
+Route::get('/pedido/{token}/pagar', [MercadoPagoCheckoutController::class, 'pagar'])
+    ->name('pedido.pagar');
+
+Route::post('/mercado-pago/webhook', [MercadoPagoWebhookController::class, 'handle'])
+    ->name('mercado-pago.webhook');
 
 require __DIR__.'/auth.php';

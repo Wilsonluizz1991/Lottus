@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\LottusPedido;
 use App\Models\LotofacilConcurso;
 use App\Services\LottusGeradorService;
+use App\Services\MercadoPagoCheckoutService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -13,6 +15,7 @@ class PublicLottusController extends Controller
 {
     public function __construct(
         private readonly LottusGeradorService $geradorService,
+        private readonly MercadoPagoCheckoutService $mercadoPagoCheckoutService,
     ) {
     }
 
@@ -55,16 +58,16 @@ class PublicLottusController extends Controller
         }
 
         $pedido = LottusPedido::create([
-        'token' => (string) Str::uuid(),
-        'email' => $request->email,
-        'quantidade' => $quantidade,
-        'concurso_base_id' => $concursoBase->id,
-        'valor' => $valorTotal,
-        'jogo' => $jogos,
-        'analise' => $analises,
-        'status' => 'aguardando_pagamento',
-        'gateway' => 'indisponivel',
-        'external_reference' => 'lottus_' . Str::uuid(),
+            'token' => (string) Str::uuid(),
+            'email' => $request->email,
+            'quantidade' => $quantidade,
+            'concurso_base_id' => $concursoBase->id,
+            'valor' => $valorTotal,
+            'jogo' => $jogos,
+            'analise' => $analises,
+            'status' => 'aguardando_pagamento',
+            'gateway' => 'mercado_pago',
+            'external_reference' => 'lottus_' . Str::uuid(),
         ]);
 
         return redirect()
@@ -78,8 +81,24 @@ class PublicLottusController extends Controller
             ->where('token', $token)
             ->firstOrFail();
 
+        $checkoutUrl = null;
+
+        if (! $pedido->isPaid()) {
+            try {
+                $checkout = $this->mercadoPagoCheckoutService->criarCheckout($pedido);
+                $checkoutUrl = $checkout['init_point'] ?? null;
+            } catch (\Throwable $e) {
+                Log::error('Erro ao gerar checkout do Mercado Pago na exibição do pedido', [
+                    'pedido_id' => $pedido->id,
+                    'pedido_token' => $pedido->token,
+                    'message' => $e->getMessage(),
+                ]);
+            }
+        }
+
         return view('public.pedido', [
             'pedido' => $pedido,
+            'checkoutUrl' => $checkoutUrl,
         ]);
     }
 
