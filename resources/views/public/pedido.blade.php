@@ -74,6 +74,45 @@
                         @endif
                     </div>
 
+                    @unless($pedido->isPaid())
+                        <div class="card border-0 shadow-sm mb-4 pagamento-instrucoes-card">
+                            <div class="card-body p-4">
+                                <h2 class="h4 fw-bold mb-3">Como funciona o pagamento</h2>
+
+                                <div class="pagamento-passos">
+                                    <div class="pagamento-passo">
+                                        <div class="pagamento-passo-numero">1</div>
+                                        <div class="pagamento-passo-texto">
+                                            Clique em <strong>Pagar agora</strong> para abrir o ambiente seguro do Mercado Pago.
+                                        </div>
+                                    </div>
+
+                                    <div class="pagamento-passo">
+                                        <div class="pagamento-passo-numero">2</div>
+                                        <div class="pagamento-passo-texto">
+                                            Escolha a forma de pagamento desejada e conclua o processo.
+                                        </div>
+                                    </div>
+
+                                    <div class="pagamento-passo">
+                                        <div class="pagamento-passo-numero">3</div>
+                                        <div class="pagamento-passo-texto">
+                                            Assim que o pagamento for confirmado, esta página será atualizada automaticamente e seus jogos serão liberados.
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="alert alert-primary mt-4 mb-3">
+                                    <strong>Pagamento com cartão:</strong> após a aprovação, o Mercado Pago normalmente redireciona você automaticamente de volta para esta página.
+                                </div>
+
+                                <div class="alert alert-warning mb-0">
+                                    <strong>Pagamento via PIX:</strong> após concluir o pagamento, clique em <strong>“Voltar à loja”</strong> no Mercado Pago para retornar à página do pedido.
+                                </div>
+                            </div>
+                        </div>
+                    @endunless
+
                     <div class="row g-4 mb-4">
                         @foreach(($pedido->jogo ?? []) as $index => $jogo)
                             <div class="col-md-6">
@@ -113,7 +152,7 @@
                             </a>
 
                             <p class="small text-muted mt-3 mb-0">
-                                Após a confirmação do pagamento, você será redirecionado automaticamente de volta para esta página.
+                                Após a confirmação do pagamento, esta página continuará verificando automaticamente o status do pedido.
                             </p>
                         @else
                             <div class="alert alert-warning mb-0">
@@ -132,6 +171,44 @@
         filter: blur(8px);
         pointer-events: none;
         user-select: none;
+    }
+
+    .pagamento-instrucoes-card {
+        border-radius: 20px;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    }
+
+    .pagamento-passos {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .pagamento-passo {
+        display: flex;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+
+    .pagamento-passo-numero {
+        width: 36px;
+        height: 36px;
+        min-width: 36px;
+        border-radius: 50%;
+        background: #0d6efd;
+        color: #fff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 1rem;
+        box-shadow: 0 8px 18px rgba(13, 110, 253, 0.18);
+    }
+
+    .pagamento-passo-texto {
+        font-size: 1rem;
+        line-height: 1.6;
+        color: #334155;
     }
 </style>
 
