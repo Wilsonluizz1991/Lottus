@@ -15,7 +15,6 @@ class PublicLottusController extends Controller
 {
     public function __construct(
         private readonly LottusGeradorService $geradorService,
-        private readonly MercadoPagoCheckoutService $mercadoPagoCheckoutService,
     ) {
     }
 
@@ -75,7 +74,7 @@ class PublicLottusController extends Controller
             ->with('success', 'Pedido gerado com sucesso.');
     }
 
-    public function showPedido(string $token)
+    public function showPedido(string $token, MercadoPagoCheckoutService $mercadoPagoCheckoutService)
     {
         $pedido = LottusPedido::with('concursoBase')
             ->where('token', $token)
@@ -85,7 +84,7 @@ class PublicLottusController extends Controller
 
         if (! $pedido->isPaid()) {
             try {
-                $checkout = $this->mercadoPagoCheckoutService->criarCheckout($pedido);
+                $checkout = $mercadoPagoCheckoutService->criarCheckout($pedido);
                 $checkoutUrl = $checkout['init_point'] ?? null;
             } catch (\Throwable $e) {
                 Log::error('Erro ao gerar checkout do Mercado Pago na exibição do pedido', [
