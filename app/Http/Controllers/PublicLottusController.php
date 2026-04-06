@@ -107,6 +107,19 @@ class PublicLottusController extends Controller
             $this->cupomService->registrarUso($cupom);
         }
 
+        if ($valorFinal <= 0) {
+            $pedido->update([
+                'status' => 'pago',
+                'payment_status' => 'approved',
+                'gateway' => 'cupom',
+                'paid_at' => now(),
+            ]);
+
+            return redirect()
+                ->route('pedido.show', $pedido->token)
+                ->with('success', 'Jogo liberado gratuitamente via cupom.');
+        }
+
         return redirect()
             ->route('pedido.show', $pedido->token)
             ->with('success', 'Pedido gerado com sucesso.');
@@ -120,7 +133,7 @@ class PublicLottusController extends Controller
 
         $checkoutUrl = null;
 
-        if (! $pedido->isPaid()) {
+        if (! $pedido->isPaid() && (float) $pedido->valor > 0) {
             try {
                 $checkout = $mercadoPagoCheckoutService->criarCheckout($pedido);
                 $checkoutUrl = $checkout['init_point'] ?? null;

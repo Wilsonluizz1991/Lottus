@@ -56,19 +56,48 @@
 
                         <div class="col-md-3">
                             <div class="border rounded-4 p-3 bg-light h-100">
-                                <small class="text-muted d-block">Valor total</small>
-                                <strong>R$ {{ number_format($pedido->valor, 2, ',', '.') }}</strong>
+                                <small class="text-muted d-block">Valor final</small>
+                                <strong>R$ {{ number_format((float) $pedido->valor, 2, ',', '.') }}</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-4">
+                            <div class="border rounded-4 p-3 bg-light h-100">
+                                <small class="text-muted d-block">Subtotal</small>
+                                <strong>R$ {{ number_format((float) ($pedido->subtotal ?? $pedido->valor_original ?? $pedido->valor), 2, ',', '.') }}</strong>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4">
+                            <div class="border rounded-4 p-3 bg-light h-100">
+                                <small class="text-muted d-block">Desconto</small>
+                                <strong class="text-success">R$ {{ number_format((float) ($pedido->desconto ?? 0), 2, ',', '.') }}</strong>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4">
+                            <div class="border rounded-4 p-3 bg-light h-100">
+                                <small class="text-muted d-block">Cupom</small>
+                                <strong>{{ $pedido->cupom_codigo ?: 'Não aplicado' }}</strong>
                             </div>
                         </div>
                     </div>
 
                     <div id="pedido-alerta-pagamento">
-                        @if($pedido->isPaid())
-                            <div class="alert alert-success">
-                                Pagamento confirmado. Seus jogos foram liberados.
+                        @if($pedido->isPaid() && $pedido->gateway === 'cupom')
+                            <div class="alert alert-success border-0 shadow-sm">
+                                <strong>Acesso liberado via cupom.</strong>
+                                Seu pedido foi aprovado automaticamente e seus jogos já estão disponíveis.
+                            </div>
+                        @elseif($pedido->isPaid())
+                            <div class="alert alert-success border-0 shadow-sm">
+                                <strong>Pagamento confirmado.</strong>
+                                Seus jogos foram liberados.
                             </div>
                         @else
-                            <div class="alert alert-info">
+                            <div class="alert alert-info border-0 shadow-sm">
                                 Seus jogos estão reservados. Efetue o pagamento para liberar o conteúdo completo.
                             </div>
                         @endif
@@ -107,7 +136,7 @@
                                 </div>
 
                                 <div class="alert alert-warning mb-0">
-                                    <strong>Pagamento via PIX:</strong> após concluir o pagamento, clique em <strong>“Voltar à loja”</strong> no Mercado Pago para retornar à página do pedido.
+                                    <strong>Pagamento via PIX:</strong> após concluir o pagamento, pode ser necessário clicar em <strong>“Voltar ao site”</strong> no Mercado Pago para retornar à página do pedido.
                                 </div>
                             </div>
                         </div>
@@ -146,19 +175,31 @@
                     </div>
 
                     @unless($pedido->isPaid())
-                        @if(!empty($checkoutUrl))
+                        @if(!empty($checkoutUrl) && (float) $pedido->valor > 0)
                             <a href="{{ $checkoutUrl }}" class="btn btn-primary btn-lg">
                                 Pagar agora
                             </a>
 
                             <p class="small text-muted mt-3 mb-0">
-                                Após a confirmação do pagamento, esta página continuará verificando automaticamente o status do pedido.
+                                Após a confirmação do pagamento, você poderá ser redirecionado automaticamente de volta para esta página.
                             </p>
                         @else
                             <div class="alert alert-warning mb-0">
                                 Não foi possível gerar o link de pagamento neste momento. Atualize a página e tente novamente.
                             </div>
                         @endif
+                    @else
+                        <div class="d-flex flex-wrap gap-2 align-items-center">
+                            <span class="badge rounded-pill text-bg-success px-3 py-2">
+                                {{ $pedido->gateway === 'cupom' ? 'Liberado via cupom' : 'Pagamento confirmado' }}
+                            </span>
+
+                            @if($pedido->cupom_codigo)
+                                <span class="badge rounded-pill text-bg-light border text-dark px-3 py-2">
+                                    Cupom: {{ $pedido->cupom_codigo }}
+                                </span>
+                            @endif
+                        </div>
                     @endunless
                 </div>
             </div>
