@@ -4,10 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Models\LottusPedido;
 use App\Models\LotofacilConcurso;
+use App\Services\CupomService;
 use App\Services\LottusGeradorService;
 use App\Services\MercadoPagoCheckoutService;
-use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -16,6 +17,7 @@ class PublicLottusController extends Controller
 {
     public function __construct(
         private readonly LottusGeradorService $geradorService,
+        private readonly CupomService $cupomService,
     ) {
     }
 
@@ -36,6 +38,7 @@ class PublicLottusController extends Controller
         $request->validate([
             'email' => ['required', 'email'],
             'quantidade' => ['required', 'integer', 'min:1', 'max:20'],
+            'cupom' => ['nullable', 'string', 'max:50'],
         ]);
 
         try {
@@ -46,7 +49,32 @@ class PublicLottusController extends Controller
 
         $quantidade = (int) $request->quantidade;
         $valorUnitario = (float) env('LOTTUS_GAME_PRICE', 2.00);
-        $valorTotal = $valorUnitario * $quantidade;
+        $subtotal = round($valorUnitario * $quantidade, 2);
+
+        $cupom = null;
+        $cupomCodigo = null;
+        $desconto = 0.00;
+        $valorFinal = $subtotal;
+
+        if ($request->filled('cupom')) {
+            $resultadoCupom = $this->cupomService->validarCupom(
+                $request->cupom,
+                $subtotal,
+                $request->email
+            );
+
+            if (! $resultadoCupom['valido']) {
+                return redirect()
+                    ->route('home')
+                    ->withInput()
+                    ->with('error', $resultadoCupom['mensagem']);
+            }
+
+            $cupom = $resultadoCupom['cupom'];
+            $cupomCodigo = $cupom->codigo;
+            $desconto = $resultadoCupom['desconto'];
+            $valorFinal = $resultadoCupom['valor_final'];
+        }
 
         $jogos = [];
         $analises = [];
@@ -62,13 +90,22 @@ class PublicLottusController extends Controller
             'email' => $request->email,
             'quantidade' => $quantidade,
             'concurso_base_id' => $concursoBase->id,
-            'valor' => $valorTotal,
+            'cupom_id' => $cupom?->id,
+            'cupom_codigo' => $cupomCodigo,
+            'subtotal' => $subtotal,
+            'desconto' => $desconto,
+            'valor_original' => $subtotal,
+            'valor' => $valorFinal,
             'jogo' => $jogos,
             'analise' => $analises,
             'status' => 'aguardando_pagamento',
             'gateway' => 'mercado_pago',
             'external_reference' => 'lottus_' . Str::uuid(),
         ]);
+
+        if ($cupom) {
+            $this->cupomService->registrarUso($cupom);
+        }
 
         return redirect()
             ->route('pedido.show', $pedido->token)

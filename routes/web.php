@@ -4,6 +4,7 @@ use App\Http\Controllers\LottusController;
 use App\Http\Controllers\MercadoPagoCheckoutController;
 use App\Http\Controllers\MercadoPagoWebhookController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\PublicCupomController;
 use App\Http\Controllers\PublicLottusController;
 use Illuminate\Support\Facades\Route;
 
@@ -23,6 +24,8 @@ Route::middleware('auth')->group(function () {
 
 Route::get('/', [PublicLottusController::class, 'home'])->name('home');
 Route::post('/gerar-jogo', [PublicLottusController::class, 'gerarJogo'])->name('jogos.gerar');
+Route::post('/cupom/validar', [PublicCupomController::class, 'validar'])->name('cupom.validar');
+
 Route::get('/pedido/{token}', [PublicLottusController::class, 'showPedido'])->name('pedido.show');
 Route::get('/pedido/{token}/status', [PublicLottusController::class, 'statusPedido'])->name('pedido.status');
 

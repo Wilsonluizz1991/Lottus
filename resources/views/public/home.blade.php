@@ -112,6 +112,12 @@
                                     </div>
                                 @enderror
 
+                                @error('cupom')
+                                    <div class="alert alert-danger border-0 shadow-sm rounded-4">
+                                        {{ $message }}
+                                    </div>
+                                @enderror
+
                                 @if($ultimoConcurso)
                                     <div class="alert alert-info border-0 shadow-sm rounded-4 p-4">
                                         <div class="fw-semibold mb-2 fs-5">
@@ -154,6 +160,7 @@
                                                 <input
                                                     type="email"
                                                     name="email"
+                                                    id="email"
                                                     class="form-control form-control-lg rounded-4"
                                                     value="{{ old('email') }}"
                                                     placeholder="voce@exemplo.com"
@@ -172,9 +179,58 @@
                                                 </select>
                                             </div>
 
+                                            <div class="mb-3">
+                                                <label for="cupom" class="form-label fw-semibold">Cupom de desconto</label>
+
+                                                <div class="cupom-layout">
+                                                    <div class="cupom-input-wrap">
+                                                        <input
+                                                            type="text"
+                                                            class="form-control form-control-lg rounded-4 cupom-input"
+                                                            id="cupom"
+                                                            placeholder="Digite seu cupom"
+                                                            value="{{ old('cupom') }}"
+                                                            autocomplete="off"
+                                                        >
+                                                    </div>
+
+                                                    <div class="cupom-button-wrap">
+                                                        <button
+                                                            type="button"
+                                                            class="btn btn-outline-primary rounded-4 w-100 btn-cupom-aplicar"
+                                                            id="btn-validar-cupom"
+                                                        >
+                                                            Aplicar
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <input type="hidden" id="cupom-aplicado" name="cupom" value="{{ old('cupom') }}">
+
+                                                <div id="cupom-feedback" class="mt-2"></div>
+                                            </div>
+
                                             <div class="border rounded-4 bg-white p-3 mb-3 resumo-preco">
-                                                <div class="small text-muted mb-1">Valor por aposta</div>
-                                                <div class="fs-5 fw-semibold mb-2">R$ {{ $preco }}</div>
+                                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                                    <span class="small text-muted">Valor por aposta</span>
+                                                    <div class="fw-semibold">R$ {{ $preco }}</div>
+                                                </div>
+
+                                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                                    <span class="small text-muted">Subtotal</span>
+                                                    <div class="fw-semibold" id="subtotal-preview">
+                                                        R$ {{ number_format($valorUnitario, 2, ',', '.') }}
+                                                    </div>
+                                                </div>
+
+                                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                                    <span class="small text-muted">Desconto</span>
+                                                    <div class="fw-semibold text-success" id="desconto-preview">
+                                                        R$ 0,00
+                                                    </div>
+                                                </div>
+
+                                                <hr class="my-3">
 
                                                 <div class="small text-muted mb-1">Valor total</div>
                                                 <div class="fs-3 fw-bold text-primary" id="valor-total">
@@ -704,11 +760,48 @@
     </div>
 </div>
 
+<style>
+    .cupom-layout {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+        align-items: stretch;
+    }
+
+    .cupom-input-wrap,
+    .cupom-button-wrap {
+        width: 100%;
+    }
+
+    .cupom-input {
+        min-height: 54px;
+    }
+
+    .btn-cupom-aplicar {
+        min-height: 54px;
+        font-weight: 600;
+        font-size: 0.98rem;
+        white-space: nowrap;
+        line-height: 1.1;
+        padding: 0.75rem 1rem;
+    }
+
+    @media (min-width: 768px) {
+        .cupom-layout {
+            grid-template-columns: minmax(0, 1fr) 140px;
+            gap: 0.75rem;
+        }
+    }
+</style>
+
 <script>
     document.addEventListener('DOMContentLoaded', function () {
         const form = document.getElementById('form-gerar-jogo');
         const quantidade = document.getElementById('quantidade');
+        const emailInput = document.getElementById('email');
         const valorTotal = document.getElementById('valor-total');
+        const subtotalPreview = document.getElementById('subtotal-preview');
+        const descontoPreview = document.getElementById('desconto-preview');
         const valorUnitario = {{ json_encode((float) $valorUnitario) }};
         const botaoGerar = document.getElementById('btn-gerar-jogo');
         const overlay = document.getElementById('gerando-overlay');
@@ -719,15 +812,39 @@
         const sidebarBackdrop = document.getElementById('lottus-sidebar-backdrop');
         const sidebarLinks = document.querySelectorAll('.lottus-sidebar-link');
         const sections = document.querySelectorAll('.lottus-section-anchor');
+        const cupomInput = document.getElementById('cupom');
+        const cupomAplicadoInput = document.getElementById('cupom-aplicado');
+        const btnValidarCupom = document.getElementById('btn-validar-cupom');
+        const feedbackCupom = document.getElementById('cupom-feedback');
+
+        function formatarBRL(valor) {
+            return 'R$ ' + Number(valor).toLocaleString('pt-BR', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+        }
 
         function obterQuantidadeSelecionada() {
             return parseInt(quantidade.value || 1, 10);
         }
 
-        function atualizarValorTotal() {
+        function subtotalAtual() {
             const qtd = obterQuantidadeSelecionada();
-            const total = (qtd * valorUnitario).toFixed(2).replace('.', ',');
-            valorTotal.textContent = 'R$ ' + total;
+            return qtd * valorUnitario;
+        }
+
+        function atualizarResumoSemCupom() {
+            const subtotal = subtotalAtual();
+
+            subtotalPreview.textContent = formatarBRL(subtotal);
+            descontoPreview.textContent = formatarBRL(0);
+            valorTotal.textContent = formatarBRL(subtotal);
+        }
+
+        function limparCupomAplicado() {
+            cupomAplicadoInput.value = '';
+            feedbackCupom.innerHTML = '';
+            atualizarResumoSemCupom();
         }
 
         function atualizarTextoBotao() {
@@ -772,14 +889,96 @@
             });
         }
 
+        async function validarCupom() {
+            const codigo = (cupomInput?.value || '').trim();
+            const qtd = obterQuantidadeSelecionada();
+            const email = (emailInput?.value || '').trim();
+
+            if (!codigo) {
+                feedbackCupom.innerHTML = '<div class="alert alert-warning border-0 shadow-sm rounded-4 mt-2 mb-0">Digite um cupom para validar.</div>';
+                cupomAplicadoInput.value = '';
+                atualizarResumoSemCupom();
+                return;
+            }
+
+            btnValidarCupom.disabled = true;
+            btnValidarCupom.textContent = 'Validando...';
+
+            try {
+                const response = await fetch(@json(route('cupom.validar')), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': @json(csrf_token()),
+                    },
+                    body: JSON.stringify({
+                        codigo,
+                        quantidade: qtd,
+                        email: email
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    feedbackCupom.innerHTML = `<div class="alert alert-danger border-0 shadow-sm rounded-4 mt-2 mb-0">${data.mensagem || 'Não foi possível aplicar o cupom.'}</div>`;
+                    cupomAplicadoInput.value = '';
+                    atualizarResumoSemCupom();
+                    return;
+                }
+
+                subtotalPreview.textContent = formatarBRL(data.subtotal);
+                descontoPreview.textContent = '- ' + formatarBRL(data.desconto);
+                valorTotal.textContent = formatarBRL(data.valor_final);
+                cupomAplicadoInput.value = data.codigo;
+
+                feedbackCupom.innerHTML = `<div class="alert alert-success border-0 shadow-sm rounded-4 mt-2 mb-0"><strong>${data.descricao}</strong> aplicado com sucesso.</div>`;
+            } catch (error) {
+                feedbackCupom.innerHTML = '<div class="alert alert-danger border-0 shadow-sm rounded-4 mt-2 mb-0">Erro ao validar o cupom. Tente novamente.</div>';
+                cupomAplicadoInput.value = '';
+                atualizarResumoSemCupom();
+            } finally {
+                btnValidarCupom.disabled = false;
+                btnValidarCupom.textContent = 'Aplicar';
+            }
+        }
+
         if (quantidade && valorTotal) {
             quantidade.addEventListener('change', function () {
-                atualizarValorTotal();
+                atualizarResumoSemCupom();
                 atualizarTextoBotao();
+
+                if (cupomAplicadoInput.value) {
+                    validarCupom();
+                }
             });
 
-            atualizarValorTotal();
+            atualizarResumoSemCupom();
             atualizarTextoBotao();
+        }
+
+        if (emailInput) {
+            emailInput.addEventListener('change', function () {
+                if (cupomAplicadoInput.value) {
+                    validarCupom();
+                }
+            });
+        }
+
+        if (cupomInput) {
+            cupomInput.addEventListener('input', function () {
+                if (!cupomInput.value.trim()) {
+                    limparCupomAplicado();
+                }
+            });
+        }
+
+        if (btnValidarCupom) {
+            btnValidarCupom.addEventListener('click', function () {
+                validarCupom();
+            });
         }
 
         if (form) {
@@ -840,6 +1039,10 @@
             sections.forEach(function (section) {
                 observer.observe(section);
             });
+        }
+
+        if (cupomAplicadoInput.value) {
+            validarCupom();
         }
     });
 </script>

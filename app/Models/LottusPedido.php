@@ -29,6 +29,11 @@ class LottusPedido extends Model
         'payment_status',
         'paid_at',
         'expires_at',
+        'cupom_id',
+        'cupom_codigo',
+        'subtotal',
+        'desconto',
+        'valor_original',
     ];
 
     protected $casts = [
@@ -36,6 +41,10 @@ class LottusPedido extends Model
         'analise' => 'array',
         'paid_at' => 'datetime',
         'expires_at' => 'datetime',
+        'valor' => 'decimal:2',
+        'subtotal' => 'decimal:2',
+        'desconto' => 'decimal:2',
+        'valor_original' => 'decimal:2',
         'valor' => 'decimal:2',
     ];
 
@@ -47,5 +56,10 @@ class LottusPedido extends Model
     public function isPaid(): bool
     {
         return $this->status === 'pago';
+    }
+
+    public function cupom()
+    {
+        return $this->belongsTo(Cupom::class, 'cupom_id');
     }
 }
