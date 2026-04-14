@@ -1,11 +1,15 @@
 <?php
 
+use App\Http\Controllers\Admin\CupomController as AdminCupomController;
+use App\Http\Controllers\Admin\DashboardController as AdminDashboardController;
+use App\Http\Controllers\Admin\PedidoController as AdminPedidoController;
 use App\Http\Controllers\LottusController;
 use App\Http\Controllers\MercadoPagoCheckoutController;
 use App\Http\Controllers\MercadoPagoWebhookController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PublicCupomController;
 use App\Http\Controllers\PublicLottusController;
+use App\Http\Middleware\AdminMiddleware;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/dashboard', function () {
@@ -20,6 +24,19 @@ Route::middleware('auth')->group(function () {
     Route::get('/lottus', [LottusController::class, 'index'])->name('lottus.index');
     Route::post('/lottus/gerar-aposta', [LottusController::class, 'gerarAposta'])->name('lottus.gerar-aposta');
     Route::post('/lottus/salvar-resultado-e-gerar', [LottusController::class, 'salvarResultadoEGerar'])->name('lottus.salvar-resultado-e-gerar');
+});
+
+Route::middleware(['auth', AdminMiddleware::class])->prefix('admin')->name('admin.')->group(function () {
+    Route::get('/', [AdminDashboardController::class, 'index'])->name('dashboard');
+
+    Route::get('/pedidos', [AdminPedidoController::class, 'index'])->name('pedidos.index');
+
+    Route::get('/cupons', [AdminCupomController::class, 'index'])->name('cupons.index');
+    Route::get('/cupons/criar', [AdminCupomController::class, 'create'])->name('cupons.create');
+    Route::post('/cupons', [AdminCupomController::class, 'store'])->name('cupons.store');
+    Route::get('/cupons/{cupom}/editar', [AdminCupomController::class, 'edit'])->name('cupons.edit');
+    Route::put('/cupons/{cupom}', [AdminCupomController::class, 'update'])->name('cupons.update');
+    Route::delete('/cupons/{cupom}', [AdminCupomController::class, 'destroy'])->name('cupons.destroy');
 });
 
 Route::get('/', [PublicLottusController::class, 'home'])->name('home');
