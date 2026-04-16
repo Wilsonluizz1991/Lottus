@@ -73,24 +73,25 @@
                                     </div>
 
                                     <p class="hero-description mb-0">
-                                        Gere um jogo da Lotofácil com base em estatística avançada, utilizando análise de até
-                                        <strong>500 concursos anteriores</strong>, filtros estruturais e critérios técnicos que
-                                        buscam entregar uma combinação mais consistente do que uma escolha feita no puro acaso.
+                                        Gere um jogo da Lotofácil com base em um motor estatístico avançado, que cruza
+                                        diferentes janelas do histórico, pondera o comportamento real das dezenas e aplica
+                                        validações estruturais rigorosas para chegar a combinações mais equilibradas,
+                                        consistentes e tecnicamente refinadas.
                                     </p>
                                 </div>
 
                                 <div class="d-flex flex-wrap gap-2 mb-4">
                                     <span class="badge rounded-pill text-bg-light border text-dark px-3 py-2">
-                                        Equilíbrio de pares e ímpares
+                                        Janelas estatísticas adaptativas
                                     </span>
                                     <span class="badge rounded-pill text-bg-light border text-dark px-3 py-2">
-                                        Números quentes e atrasados
+                                        Quentes, atrasadas e momentum
                                     </span>
                                     <span class="badge rounded-pill text-bg-light border text-dark px-3 py-2">
-                                        Moldura e centro
+                                        Moldura, centro e simetria
                                     </span>
                                     <span class="badge rounded-pill text-bg-light border text-dark px-3 py-2">
-                                        Primos e distribuição
+                                        Linhas, colunas e diversidade
                                     </span>
                                 </div>
 
@@ -125,14 +126,15 @@
                                         </div>
 
                                         <div class="mb-2">
-                                            O Lottus não gera jogos no aleatório. Cada combinação é construída com base
-                                            na análise de <strong>até 500 concursos anteriores</strong>, cruzando padrões
-                                            de curto, médio e longo prazo para buscar jogos mais equilibrados e consistentes.
+                                            A Lottus não gera jogos no aleatório. Cada combinação é construída a partir de
+                                            uma leitura estatística profunda do histórico, usando janelas de curto, médio e
+                                            longo prazo para medir força recente, estabilidade, atraso e recorrência das dezenas.
                                         </div>
 
                                         <div class="small text-muted mb-2">
-                                            Isso significa que o sistema leva em conta o comportamento real das dezenas ao longo do tempo,
-                                            e não apenas o resultado mais recente.
+                                            Além da análise de frequência, o sistema ajusta os critérios com base no comportamento
+                                            real dos concursos anteriores e só aprova combinações que passam por filtros estruturais
+                                            e validações técnicas muito mais refinadas.
                                         </div>
 
                                         <div class="small">
@@ -352,7 +354,7 @@
                                             <div>
                                                 <h3 class="h4 fw-bold mb-1">Dezenas sorteadas</h3>
                                                 <p class="text-muted mb-0">
-                                                    Resultado mais recente disponível na base oficial do Lottus.
+                                                    Resultado mais recente disponível na base oficial da Lottus.
                                                 </p>
                                             </div>
 
@@ -501,7 +503,7 @@
                                 <div class="sobre-kicker mb-3">Sobre nós</div>
 
                                 <h2 class="h1 fw-bold mb-3 sobre-titulo">
-                                    O Lottus nasceu para elevar o nível da aposta.
+                                    A Lottus nasceu para elevar o nível da aposta.
                                 </h2>
 
                                 <p class="sobre-descricao mb-3">
@@ -509,7 +511,7 @@
                                 </p>
 
                                 <p class="sobre-descricao mb-0">
-                                    Em vez de entregar jogos montados no puro acaso, nossa plataforma analisa concursos anteriores, pondera dezenas por comportamento estatístico, aplica filtros técnicos rigorosos e seleciona combinações mais consistentes dentro de uma lógica inteligente de geração.
+                                    Em vez de entregar jogos montados no puro acaso, nossa plataforma lê o histórico em múltiplas camadas, pondera dezenas por força recente, estabilidade e atraso, aplica filtros técnicos adaptativos e seleciona combinações mais consistentes dentro de uma lógica avançada de geração.
                                 </p>
                             </div>
 
@@ -518,7 +520,7 @@
                                     <div class="sobre-highlight-label">Posicionamento do produto</div>
                                     <div class="sobre-highlight-title">Mais que um gerador</div>
                                     <p class="sobre-highlight-text mb-0">
-                                        O Lottus atua como um motor de análise e seleção técnica de jogos, desenvolvido para entregar apostas mais equilibradas, mais filtradas e muito mais bem trabalhadas do que escolhas aleatórias.
+                                        A Lottus atua como um motor de análise e seleção técnica de jogos, desenvolvido para entregar apostas mais equilibradas, mais filtradas e muito mais bem trabalhadas do que escolhas aleatórias.
                                     </p>
                                 </div>
                             </div>
@@ -530,7 +532,7 @@
                                     <div class="sobre-mini-numero">01</div>
                                     <h3 class="h5 fw-bold mb-2">Base histórica real</h3>
                                     <p class="text-muted mb-0">
-                                        O sistema analisa concursos anteriores para entender frequência, atraso e comportamento das dezenas em diferentes horizontes.
+                                        O sistema analisa concursos anteriores em múltiplas janelas para medir frequência, estabilidade, atraso e comportamento estatístico das dezenas.
                                     </p>
                                 </div>
                             </div>
@@ -540,7 +542,7 @@
                                     <div class="sobre-mini-numero">02</div>
                                     <h3 class="h5 fw-bold mb-2">Critério acima do acaso</h3>
                                     <p class="text-muted mb-0">
-                                        Cada combinação nasce com pesos estatísticos e passa por validações que eliminam jogos estruturalmente mais fracos.
+                                        Cada combinação nasce com pesos estatísticos refinados e passa por validações adaptativas que eliminam jogos estruturalmente mais fracos.
                                     </p>
                                 </div>
                             </div>
@@ -550,7 +552,7 @@
                                     <div class="sobre-mini-numero">03</div>
                                     <h3 class="h5 fw-bold mb-2">Milhares de cenários</h3>
                                     <p class="text-muted mb-0">
-                                        O Lottus gera internamente milhares de possibilidades e seleciona apenas candidatas que atendem padrões rigorosos.
+                                        A Lottus gera internamente milhares de possibilidades, remove duplicidades e seleciona apenas candidatas que atendem padrões rigorosos.
                                     </p>
                                 </div>
                             </div>
@@ -560,7 +562,7 @@
                                     <div class="sobre-mini-numero">04</div>
                                     <h3 class="h5 fw-bold mb-2">Aposta mais refinada</h3>
                                     <p class="text-muted mb-0">
-                                        Você não compra promessa de prêmio. Você acessa uma aposta construída com muito mais leitura, técnica e inteligência.
+                                        Você não compra promessa de prêmio. Você acessa uma aposta construída com muito mais leitura, técnica, diversidade e inteligência.
                                     </p>
                                 </div>
                             </div>
@@ -571,7 +573,7 @@
                                 <div class="col-lg-8">
                                     <h3 class="h4 fw-bold mb-2">Nossa proposta é simples</h3>
                                     <p class="mb-0 text-muted">
-                                        Se a loteria é um jogo de probabilidade, então a escolha da combinação também deve ser tratada com método. O Lottus existe para substituir o chute por um processo muito mais técnico, estratégico e criterioso.
+                                        Se a loteria é um jogo de probabilidade, então a escolha da combinação também deve ser tratada com método. A Lottus existe para substituir o chute por um processo muito mais técnico, estratégico e criterioso.
                                     </p>
                                 </div>
 
@@ -589,40 +591,40 @@
             <section id="metodologia" class="lottus-section-anchor">
                 <div class="card border-0 shadow-lg mb-4 info-card">
                     <div class="card-body p-4 p-md-5">
-                        <h2 class="h3 fw-bold mb-3">Como o Lottus valoriza o seu jogo</h2>
+                        <h2 class="h3 fw-bold mb-3">Como a Lottus valoriza o seu jogo</h2>
                         <p class="text-muted mb-4">
-                            O Lottus não entrega uma combinação montada no chute. Antes de um jogo chegar até você,
-                            ele passa por uma série de análises e validações para buscar uma estrutura mais forte,
-                            mais equilibrada e tecnicamente mais consistente.
+                            A Lottus não entrega uma combinação montada no chute. Antes de um jogo chegar até você,
+                            ele passa por uma sequência de análises estatísticas, filtros adaptativos e validações estruturais
+                            para buscar uma composição mais forte, mais equilibrada e tecnicamente muito mais consistente.
                         </p>
 
                         <div class="row g-4">
                             <div class="col-md-6">
                                 <div class="feature-card h-100">
-                                    <h3 class="h5 fw-bold mb-2">1. Leitura do histórico dos concursos</h3>
+                                    <h3 class="h5 fw-bold mb-2">1. Leitura multicamadas do histórico</h3>
                                     <p class="text-muted mb-0">
-                                        O sistema analisa o comportamento das dezenas em diferentes janelas do histórico
-                                        para entender o que está mais forte no curto, médio e longo prazo.
+                                        O sistema analisa o histórico em diferentes janelas estatísticas para entender
+                                        força recente, estabilidade de longo prazo e o comportamento real das dezenas ao longo do tempo.
                                     </p>
                                 </div>
                             </div>
 
                             <div class="col-md-6">
                                 <div class="feature-card h-100">
-                                    <h3 class="h5 fw-bold mb-2">2. Avaliação de números quentes e atrasados</h3>
+                                    <h3 class="h5 fw-bold mb-2">2. Score avançado das dezenas</h3>
                                     <p class="text-muted mb-0">
-                                        O jogo considera dezenas que estão em evidência e também números com atraso
-                                        estatisticamente interessante, buscando uma combinação mais inteligente.
+                                        Cada número recebe um peso calculado por frequência, atraso, recorrência e momentum,
+                                        formando uma base estatística muito mais refinada para a geração.
                                     </p>
                                 </div>
                             </div>
 
                             <div class="col-md-6">
                                 <div class="feature-card h-100">
-                                    <h3 class="h5 fw-bold mb-2">3. Equilíbrio de pares e ímpares</h3>
+                                    <h3 class="h5 fw-bold mb-2">3. Filtros adaptativos de equilíbrio</h3>
                                     <p class="text-muted mb-0">
-                                        O sistema evita jogos muito desbalanceados e prioriza combinações que respeitam
-                                        padrões comuns de equilíbrio entre dezenas pares e ímpares.
+                                        Em vez de depender só de regras fixas, o sistema ajusta intervalos com base no
+                                        comportamento histórico para validar soma, pares, repetições e distribuição das dezenas.
                                     </p>
                                 </div>
                             </div>
@@ -631,48 +633,48 @@
                                 <div class="feature-card h-100">
                                     <h3 class="h5 fw-bold mb-2">4. Distribuição no volante</h3>
                                     <p class="text-muted mb-0">
-                                        O jogo passa por filtros que analisam a distribuição dos números no volante,
-                                        evitando concentrações exageradas e buscando uma ocupação mais consistente.
+                                        O jogo passa por validações de faixas, quadrantes, linhas e colunas para evitar
+                                        concentrações exageradas e buscar uma ocupação muito mais consistente do volante.
                                     </p>
                                 </div>
                             </div>
 
                             <div class="col-md-6">
                                 <div class="feature-card h-100">
-                                    <h3 class="h5 fw-bold mb-2">5. Moldura, centro e estrutura geométrica</h3>
+                                    <h3 class="h5 fw-bold mb-2">5. Estrutura geométrica e padrões do jogo</h3>
                                     <p class="text-muted mb-0">
-                                        O sistema valida a relação entre moldura e centro, além de outras estruturas do volante,
-                                        descartando jogos que fogem demais dos padrões mais frequentes.
+                                        O sistema valida moldura, centro, sequências, diagonais, simetria e outras relações
+                                        estruturais para descartar combinações que fogem dos padrões mais saudáveis.
                                     </p>
                                 </div>
                             </div>
 
                             <div class="col-md-6">
                                 <div class="feature-card h-100">
-                                    <h3 class="h5 fw-bold mb-2">6. Primos, sequências e repetições</h3>
+                                    <h3 class="h5 fw-bold mb-2">6. Repetições e composição numérica</h3>
                                     <p class="text-muted mb-0">
-                                        Também entram na análise critérios como presença de números primos,
-                                        limite de sequências e repetição controlada em relação ao último concurso.
+                                        Também entram na análise repetições com concursos recentes, números quentes,
+                                        atrasadas, primos e Fibonacci, compondo uma leitura muito mais profunda do volante.
                                     </p>
                                 </div>
                             </div>
 
                             <div class="col-md-6">
                                 <div class="feature-card h-100">
-                                    <h3 class="h5 fw-bold mb-2">7. Geração de milhares de combinações</h3>
+                                    <h3 class="h5 fw-bold mb-2">7. Geração massiva com eliminação técnica</h3>
                                     <p class="text-muted mb-0">
-                                        Em vez de entregar um jogo qualquer, o sistema gera milhares de combinações internas
-                                        e elimina as mais fracas até encontrar as candidatas mais fortes.
+                                        Em vez de entregar um jogo qualquer, o sistema gera milhares de combinações internas,
+                                        elimina as estruturalmente mais fracas e mantém apenas as candidatas mais fortes.
                                     </p>
                                 </div>
                             </div>
 
                             <div class="col-md-6">
                                 <div class="feature-card h-100">
-                                    <h3 class="h5 fw-bold mb-2">8. Seleção final do jogo</h3>
+                                    <h3 class="h5 fw-bold mb-2">8. Seleção final mais refinada</h3>
                                     <p class="text-muted mb-0">
-                                        Depois de passar por toda a filtragem, o jogo final é escolhido entre os melhores
-                                        candidatos encontrados, entregando uma aposta tecnicamente melhor trabalhada.
+                                        Depois de pontuar os melhores cenários, a Lottus escolhe o jogo final dentro de uma
+                                        elite diversificada de candidatas, entregando uma aposta muito melhor trabalhada.
                                     </p>
                                 </div>
                             </div>
@@ -693,11 +695,11 @@
                                 </h2>
 
                                 <p class="transparencia-description mb-3">
-                                    O Lottus não vende ilusão, não promete prêmio e não oferece garantias irreais de acerto. Nossa proposta é outra: entregar apostas tecnicamente mais bem construídas, com muito mais critério do que uma escolha feita no puro acaso.
+                                    A Lottus não vende ilusão, não promete prêmio e não oferece garantias irreais de acerto. Nossa proposta é outra: entregar apostas tecnicamente mais bem construídas, com muito mais critério do que uma escolha feita no puro acaso.
                                 </p>
 
                                 <p class="transparencia-description mb-0">
-                                    A loteria continua sendo um jogo de probabilidade. O que o Lottus faz é elevar a qualidade da seleção, aplicando leitura histórica, filtros estruturais, balanceamento estatístico e inteligência de análise para chegar a combinações mais consistentes.
+                                    A loteria continua sendo um jogo de probabilidade. O que a Lottus faz é elevar a qualidade da seleção, aplicando leitura histórica, filtros adaptativos, balanceamento estrutural e inteligência estatística para chegar a combinações mais consistentes.
                                 </p>
                             </div>
 
@@ -715,7 +717,7 @@
                         <div class="row g-3 mt-1">
                             <div class="col-md-4">
                                 <div class="transparencia-item h-100">
-                                    <div class="transparencia-item-title">O que o Lottus não faz</div>
+                                    <div class="transparencia-item-title">O que a Lottus não faz</div>
                                     <p class="mb-0 text-muted">
                                         Não promete 15 pontos, não vende certeza de prêmio e não usa discurso enganoso para induzir compra.
                                     </p>
@@ -724,9 +726,9 @@
 
                             <div class="col-md-4">
                                 <div class="transparencia-item h-100">
-                                    <div class="transparencia-item-title">O que o Lottus entrega</div>
+                                    <div class="transparencia-item-title">O que a Lottus entrega</div>
                                     <p class="mb-0 text-muted">
-                                        Uma combinação analisada com base em histórico, estatística, equilíbrio estrutural e critérios técnicos de validação.
+                                        Uma combinação analisada com base em histórico, score estatístico, equilíbrio estrutural e filtros técnicos muito mais avançados.
                                     </p>
                                 </div>
                             </div>
