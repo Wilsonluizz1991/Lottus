@@ -64,6 +64,7 @@ class MercadoPagoCheckoutService
                 ];
 
                 $request['auto_return'] = 'approved';
+                $request['notification_url'] = $appUrl . '/mercado-pago/webhook';
             }
 
             $requestOptions = new RequestOptions();
