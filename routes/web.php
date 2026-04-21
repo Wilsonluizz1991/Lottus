@@ -9,6 +9,7 @@ use App\Http\Controllers\MercadoPagoWebhookController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PublicCupomController;
 use App\Http\Controllers\PublicLottusController;
+use App\Http\Controllers\Lottus\NovoGeracaoJogosController;
 use App\Http\Middleware\AdminMiddleware;
 use Illuminate\Support\Facades\Route;
 
@@ -40,8 +41,9 @@ Route::middleware(['auth', AdminMiddleware::class])->prefix('admin')->name('admi
 });
 
 Route::get('/', [PublicLottusController::class, 'home'])->name('home');
-Route::post('/gerar-jogo', [PublicLottusController::class, 'gerarJogo'])->name('jogos.gerar');
+// Route::post('/gerar-jogo', [PublicLottusController::class, 'gerarJogo'])->name('jogos.gerar');
 Route::post('/cupom/validar', [PublicCupomController::class, 'validar'])->name('cupom.validar');
+Route::post('/jogos/gerar', [NovoGeracaoJogosController::class, 'gerar'])->name('jogos.gerar');
 
 Route::get('/pedido/{token}', [PublicLottusController::class, 'showPedido'])->name('pedido.show');
 Route::get('/pedido/{token}/status', [PublicLottusController::class, 'statusPedido'])->name('pedido.status');

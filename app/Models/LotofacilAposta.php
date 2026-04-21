@@ -12,7 +12,8 @@ class LotofacilAposta extends Model
     protected $table = 'lotofacil_apostas';
 
     protected $fillable = [
-        'user_id',
+        'email',
+        'token_lote',
         'concurso_base_id',
         'data_esperada_sorteio',
         'dezenas',
@@ -36,10 +37,5 @@ class LotofacilAposta extends Model
     public function concursoBase()
     {
         return $this->belongsTo(LotofacilConcurso::class, 'concurso_base_id');
-    }
-
-    public function user()
-    {
-        return $this->belongsTo(User::class);
     }
 }
