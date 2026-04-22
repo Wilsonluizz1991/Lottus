@@ -51,6 +51,7 @@ class BacktestService
             'inicio_concurso' => $inicioConcurso,
             'fim_concurso' => $fimConcurso,
             'quantidade_jogos_por_concurso' => $quantidadeJogos,
+            'quantidade_candidatos_por_concurso' => (int) config('lottus.generator.target_candidates', 200),
             'concursos_testados' => 0,
             'jogos_gerados' => 0,
             'faixas' => [
@@ -67,6 +68,7 @@ class BacktestService
                 'jogo' => [],
                 'resultado' => [],
             ],
+            'diagnostico' => [],
         ];
 
         foreach ($concursos as $concursoReal) {
@@ -82,31 +84,68 @@ class BacktestService
                 continue;
             }
 
-            $frequencyContext = $this->frequencyAnalysisService->analyze($historico);
-            $delayContext = $this->delayAnalysisService->analyze($historico);
-            $correlationContext = $this->correlationAnalysisService->analyze($historico);
-            $structureContext = $this->structureAnalysisService->analyze($historico);
-            $cycleContext = $this->cycleAnalysisService->analyze($historico);
-
-            $candidates = $this->candidateGeneratorService->generate(
-                $quantidadeJogos,
-                $frequencyContext,
-                $delayContext,
-                $correlationContext,
-                $structureContext,
-                $cycleContext
-            );
-
-            if (empty($candidates)) {
-                continue;
-            }
-
             $concursoBase = LotofacilConcurso::query()
                 ->where('concurso', $numeroConcurso - 1)
                 ->first();
 
             if (! $concursoBase) {
                 continue;
+            }
+
+            $frequencyContext = $this->frequencyAnalysisService->analyze($historico);
+            $delayContext = $this->delayAnalysisService->analyze($historico);
+            $correlationContext = $this->correlationAnalysisService->analyze($historico);
+            $structureContext = $this->structureAnalysisService->analyze($historico);
+            $cycleContext = $this->cycleAnalysisService->analyze($historico);
+
+            $targetCandidates = (int) config('lottus.generator.target_candidates', 200);
+
+            $candidateWeights = [
+                'frequency' => (float) config('lottus.weights.frequency', 0.25),
+                'delay' => (float) config('lottus.weights.delay', 0.25),
+                'correlation' => (float) config('lottus.weights.correlation', 0.25),
+                'cycle' => (float) config('lottus.weights.cycle', 0.25),
+                'faltantes' => $cycleContext['faltantes'] ?? [],
+                'last_draw_numbers' => $this->extractNumbers($concursoBase),
+                'scores' => $cycleContext['scores'] ?? [],
+                'cycle_scores' => $cycleContext['scores'] ?? [],
+            ];
+
+            $candidateGames = $this->candidateGeneratorService->generate(
+                $targetCandidates,
+                $frequencyContext,
+                $delayContext,
+                $correlationContext,
+                $structureContext,
+                $candidateWeights
+            );
+
+            if (empty($candidateGames)) {
+                continue;
+            }
+
+            $resultadoReal = $this->extractNumbers($concursoReal);
+
+            $bestRaw = 0;
+            $bestRawGame = [];
+
+            foreach ($candidateGames as $game) {
+                $hits = count(array_intersect($game, $resultadoReal));
+
+                if ($hits > $bestRaw) {
+                    $bestRaw = $hits;
+                    $bestRawGame = $game;
+                }
+            }
+
+            $candidates = [];
+
+            foreach ($candidateGames as $game) {
+                $candidates[] = [
+                    'dezenas' => $game,
+                    'profile' => 'aggressive',
+                    'cycle_missing' => $cycleContext['faltantes'] ?? [],
+                ];
             }
 
             $rankedGames = $this->gameScoringService->rank(
@@ -124,7 +163,6 @@ class BacktestService
 
             $selectedGames = $this->portfolioOptimizerService->optimize($rankedGames, $quantidadeJogos);
 
-            $resultadoReal = $this->extractNumbers($concursoReal);
             $melhorAcertoConcurso = 0;
             $melhorJogoConcurso = [];
 
@@ -157,6 +195,16 @@ class BacktestService
                 'concurso' => $numeroConcurso,
                 'melhor_acerto' => $melhorAcertoConcurso,
                 'jogo' => $melhorJogoConcurso,
+                'resultado' => $resultadoReal,
+            ];
+
+            $resumo['diagnostico'][] = [
+                'concurso' => $numeroConcurso,
+                'raw' => $bestRaw,
+                'raw_jogo' => $bestRawGame,
+                'selected' => $melhorAcertoConcurso,
+                'selected_jogo' => $melhorJogoConcurso,
+                'loss' => $bestRaw - $melhorAcertoConcurso,
                 'resultado' => $resultadoReal,
             ];
         }

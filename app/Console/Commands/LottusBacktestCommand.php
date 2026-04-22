@@ -56,6 +56,36 @@ class LottusBacktestCommand extends Command
             $this->line('Jogo: ' . implode(', ', $resultado['melhor_resultado']['jogo'] ?? []));
             $this->line('Resultado: ' . implode(', ', $resultado['melhor_resultado']['resultado'] ?? []));
 
+            if (! empty($resultado['diagnostico'])) {
+                $this->newLine();
+                $this->info('Diagnóstico RAW vs SELECTED (somente concursos relevantes):');
+
+                $linhasDiagnostico = [];
+
+                foreach ($resultado['diagnostico'] as $item) {
+                    if (($item['raw'] ?? 0) >= 14 || ($item['loss'] ?? 0) > 0) {
+                        $linhasDiagnostico[] = [
+                            'Concurso' => $item['concurso'],
+                            'RAW' => $item['raw'],
+                            'SELECTED' => $item['selected'],
+                            'LOSS' => $item['loss'],
+                            'RAW jogo' => implode(', ', $item['raw_jogo'] ?? []),
+                            'SELECTED jogo' => implode(', ', $item['selected_jogo'] ?? []),
+                            'Resultado' => implode(', ', $item['resultado'] ?? []),
+                        ];
+                    }
+                }
+
+                if (empty($linhasDiagnostico)) {
+                    $this->line('Nenhum concurso com RAW >= 14 ou LOSS > 0 neste intervalo.');
+                } else {
+                    $this->table(
+                        ['Concurso', 'RAW', 'SELECTED', 'LOSS', 'RAW jogo', 'SELECTED jogo', 'Resultado'],
+                        $linhasDiagnostico
+                    );
+                }
+            }
+
             return self::SUCCESS;
         } catch (\Throwable $e) {
             $this->error('Erro ao executar backtest: ' . $e->getMessage());
