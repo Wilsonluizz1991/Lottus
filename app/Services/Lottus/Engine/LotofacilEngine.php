@@ -104,7 +104,7 @@ class LotofacilEngine
     {
         $weights = $this->pickChampionWeights();
 
-        if ((bool) config('lottus.micro_variation.enabled', true)) {
+        if ((bool) config('lottus.micro_variation.enabled', false)) {
             $range = (float) config('lottus.micro_variation.range', 0.02);
 
             $weights['frequency'] = $this->vary($weights['frequency'], $range);

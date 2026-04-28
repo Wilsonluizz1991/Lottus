@@ -36,13 +36,27 @@ return [
     */
 
     'generator' => [
-        'attempts' => 2500,
-        'target_candidates' => 200,
+        'attempts' => 8000,
+        'target_candidates' => 800,
     ],
 
     'backtest' => [
         'oracle_mode' => env('LOTTUS_ORACLE_MODE', false),
+    ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Micro Variation
+    |--------------------------------------------------------------------------
+    |
+    | Em produção, deve ficar desligado para garantir previsibilidade e
+    | reprodutibilidade do motor.
+    |
+    */
+
+    'micro_variation' => [
+        'enabled' => false,
+        'range' => 0.02,
     ],
 
 ];
