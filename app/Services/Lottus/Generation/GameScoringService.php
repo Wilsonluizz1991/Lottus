@@ -19,7 +19,7 @@ class GameScoringService
 
         foreach ($candidates as $candidate) {
             $game = $candidate['dezenas'] ?? $candidate;
-            $profile = $candidate['profile'] ?? 'unknown';
+            $profile = $candidate['profile'] ?? 'balanced';
             $cycleMissing = $candidate['cycle_missing'] ?? [];
 
             $game = array_values(array_unique(array_map('intval', $game)));
@@ -34,72 +34,208 @@ class GameScoringService
             $correlationScore = $this->pairMetric($game, $correlationContext['pair_scores'] ?? []);
 
             $repeatCount = count(array_intersect($game, $ultimoConcurso));
-            $cycleHits = count(array_intersect($game, $cycleMissing));
-            $sum = array_sum($game);
+            $cycleHit = count(array_intersect($game, $cycleMissing));
+
             $oddCount = count(array_filter($game, fn ($n) => $n % 2 !== 0));
             $evenCount = 15 - $oddCount;
+            $sum = array_sum($game);
+            $lineDistribution = $this->lineDistribution($game);
             $longestSequence = $this->longestSequence($game);
+            $frameCount = $this->frameCount($game);
+            $middleCount = 15 - $frameCount;
             $clusterStrength = $this->clusterStrength($game);
+            $quadrantDistribution = $this->quadrantDistribution($game);
 
-            $score =
-                ($frequencyScore * 0.42) +
-                ($delayScore * 0.34) +
-                ($correlationScore * 24.00) +
-                ($repeatCount * 0.85) +
-                ($cycleHits * 1.10) +
-                ($clusterStrength * 6.00);
+            $frequencyQuality = $this->metricQuality($frequencyScore);
+            $delayQuality = $this->metricQuality($delayScore);
+            $correlationQuality = $this->metricQuality($correlationScore);
 
-            if ($longestSequence >= 3) {
-                $score += 0.35;
+            $repeatQuality = $this->repeatQuality($repeatCount);
+            $cycleQuality = $this->cycleQuality($cycleHit, $cycleMissing);
+            $sumQuality = $this->sumQuality($sum);
+            $parityQuality = $this->parityQuality($oddCount, $evenCount);
+            $sequenceQuality = $this->sequenceQuality($longestSequence);
+            $lineQuality = $this->lineQuality($lineDistribution);
+            $frameQuality = $this->frameQuality($frameCount, $middleCount);
+            $clusterQuality = $this->clusterQuality($clusterStrength);
+            $quadrantQuality = $this->quadrantQuality($quadrantDistribution);
+
+            $statScore =
+                ($frequencyQuality * 8.60) +
+                ($delayQuality * 7.20) +
+                ($correlationQuality * 10.80) +
+                ($repeatQuality * 9.20) +
+                ($cycleQuality * 6.80);
+
+            $structureScore =
+                ($sumQuality * 1.80) +
+                ($parityQuality * 1.40) +
+                ($sequenceQuality * 1.80) +
+                ($lineQuality * 1.10) +
+                ($frameQuality * 1.20) +
+                ($clusterQuality * 1.80) +
+                ($quadrantQuality * 1.00);
+
+            $huntScore = ($statScore * 1.45) + ($structureScore * 0.65);
+
+            /*
+            |--------------------------------------------------------------------------
+            | HUNT 14+ AGGRESSIVE BOOST
+            |--------------------------------------------------------------------------
+            */
+
+            if ($repeatCount >= 8 && $repeatCount <= 11) {
+                $huntScore += 9.50;
+            } elseif ($repeatCount === 7 || $repeatCount === 12) {
+                $huntScore += 5.40;
             }
 
-            if ($longestSequence >= 4) {
-                $score += 0.25;
+            if ($cycleHit >= 4) {
+                $huntScore += 8.20;
+            } elseif ($cycleHit === 3) {
+                $huntScore += 6.20;
+            } elseif ($cycleHit === 2) {
+                $huntScore += 3.40;
             }
 
-            if ($longestSequence >= 5) {
-                $score += 0.15;
+            if (
+                $correlationQuality >= 0.75 &&
+                $frequencyQuality >= 0.68 &&
+                $delayQuality >= 0.50
+            ) {
+                $huntScore += 12.00;
             }
 
-            if ($sum >= 165 && $sum <= 220) {
-                $score += 0.20;
+            if (
+                $repeatCount >= 8 &&
+                $repeatCount <= 11 &&
+                $clusterStrength >= 9
+            ) {
+                $huntScore += 7.50;
             }
 
-            if ($oddCount >= 5 && $oddCount <= 10) {
-                $score += 0.15;
+            if (
+                $sum >= 175 &&
+                $sum <= 215
+            ) {
+                $huntScore += 4.80;
             }
 
-            $extremeScore =
-                ($frequencyScore * 0.38) +
-                ($delayScore * 0.32) +
-                ($correlationScore * 26.00) +
-                ($repeatCount * 0.95) +
-                ($cycleHits * 1.25) +
-                ($clusterStrength * 7.00);
+            if (
+                $oddCount >= 6 &&
+                $oddCount <= 9
+            ) {
+                $huntScore += 4.20;
+            }
+
+            if (
+                $longestSequence >= 3 &&
+                $longestSequence <= 6
+            ) {
+                $huntScore += 4.60;
+            }
+
+            if (
+                $quadrantQuality >= 0.70 &&
+                $lineQuality >= 0.70
+            ) {
+                $huntScore += 6.20;
+            }
+
+            if (
+                $frameQuality >= 0.75 &&
+                $clusterQuality >= 0.70
+            ) {
+                $huntScore += 5.80;
+            }
+
+            if (
+                $frequencyQuality >= 0.72 &&
+                $correlationQuality >= 0.72 &&
+                $repeatQuality >= 0.80
+            ) {
+                $huntScore += 15.00;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | EXTREME 14+ MULTIPLIER
+            |--------------------------------------------------------------------------
+            */
+
+            $eliteFactor = 1.0;
+
+            if (
+                $repeatCount >= 8 &&
+                $repeatCount <= 11 &&
+                $correlationQuality >= 0.70 &&
+                $frequencyQuality >= 0.68
+            ) {
+                $eliteFactor += 0.28;
+            }
+
+            if (
+                $clusterStrength >= 9 &&
+                $quadrantQuality >= 0.70
+            ) {
+                $eliteFactor += 0.12;
+            }
+
+            $huntScore *= $eliteFactor;
+
+            $profileBoost = match ($profile) {
+                'aggressive', 'explosive' => 1.10,
+                'balanced' => 1.00,
+                default => 1.04,
+            };
+
+            $score = $huntScore * $profileBoost;
 
             $ranked[] = [
                 'dezenas' => $game,
                 'profile' => $profile,
                 'score' => round($score, 6),
-                'extreme_score' => round($extremeScore, 6),
-                'repetidas_ultimo_concurso' => $repeatCount,
-                'cycle_hits' => $cycleHits,
+                'extreme_score' => round($huntScore, 6),
+                'stat_score' => round($statScore, 6),
+                'structure_score' => round($structureScore, 6),
                 'pares' => $evenCount,
                 'impares' => $oddCount,
                 'soma' => $sum,
+                'repetidas_ultimo_concurso' => $repeatCount,
+                'cycle_hits' => $cycleHit,
                 'analise' => [
+                    'profile' => $profile,
+                    'repeat' => $repeatCount,
+                    'cycle_hits' => $cycleHit,
+                    'pares' => $evenCount,
+                    'impares' => $oddCount,
+                    'soma' => $sum,
                     'sequencia_maxima' => $longestSequence,
-                    'cluster_strength' => round($clusterStrength, 6),
+                    'linhas' => $lineDistribution,
+                    'moldura' => $frameCount,
+                    'miolo' => $middleCount,
+                    'cluster_strength' => round($clusterStrength, 4),
+                    'quadrantes' => $quadrantDistribution,
+                    'frequency_score' => round($frequencyScore, 6),
+                    'delay_score' => round($delayScore, 6),
+                    'correlation_score' => round($correlationScore, 6),
+                    'frequency_quality' => round($frequencyQuality, 4),
+                    'delay_quality' => round($delayQuality, 4),
+                    'correlation_quality' => round($correlationQuality, 4),
+                    'repeat_quality' => round($repeatQuality, 4),
+                    'cycle_quality' => round($cycleQuality, 4),
+                    'sum_quality' => round($sumQuality, 4),
+                    'parity_quality' => round($parityQuality, 4),
+                    'sequence_quality' => round($sequenceQuality, 4),
+                    'line_quality' => round($lineQuality, 4),
+                    'frame_quality' => round($frameQuality, 4),
+                    'cluster_quality' => round($clusterQuality, 4),
+                    'quadrant_quality' => round($quadrantQuality, 4),
                 ],
             ];
         }
 
-        usort($ranked, function ($a, $b) {
-            $scoreA = ((float) ($a['score'] ?? 0.0) * 0.72) + ((float) ($a['extreme_score'] ?? 0.0) * 0.28);
-            $scoreB = ((float) ($b['score'] ?? 0.0) * 0.72) + ((float) ($b['extreme_score'] ?? 0.0) * 0.28);
-
-            return $scoreB <=> $scoreA;
-        });
+        usort($ranked, fn ($a, $b) => $b['score'] <=> $a['score']);
 
         return $ranked;
     }
@@ -130,7 +266,126 @@ class GameScoringService
             }
         }
 
-        return $count > 0 ? ($total / $count) : 0.0;
+        return $count ? ($total / $count) : 0.0;
+    }
+
+    protected function metricQuality(float $value): float
+    {
+        return 1.0 / (1.0 + exp(-$value));
+    }
+
+    protected function repeatQuality(int $repeatCount): float
+    {
+        return match (true) {
+            $repeatCount >= 8 && $repeatCount <= 11 => 1.00,
+            $repeatCount === 7 || $repeatCount === 12 => 0.76,
+            $repeatCount === 6 || $repeatCount === 13 => 0.42,
+            default => 0.16,
+        };
+    }
+
+    protected function cycleQuality(int $cycleHit, array $cycleMissing): float
+    {
+        if (empty($cycleMissing)) {
+            return 0.50;
+        }
+
+        return match (true) {
+            $cycleHit >= 4 => 1.00,
+            $cycleHit === 3 => 0.88,
+            $cycleHit === 2 => 0.74,
+            $cycleHit === 1 => 0.56,
+            default => 0.22,
+        };
+    }
+
+    protected function sumQuality(int $sum): float
+    {
+        return match (true) {
+            $sum >= 170 && $sum <= 215 => 1.00,
+            $sum >= 160 && $sum <= 225 => 0.82,
+            $sum >= 150 && $sum <= 235 => 0.48,
+            default => 0.18,
+        };
+    }
+
+    protected function parityQuality(int $oddCount, int $evenCount): float
+    {
+        return match (true) {
+            ($oddCount === 7 && $evenCount === 8) || ($oddCount === 8 && $evenCount === 7) => 1.00,
+            ($oddCount === 6 && $evenCount === 9) || ($oddCount === 9 && $evenCount === 6) => 0.82,
+            ($oddCount === 5 && $evenCount === 10) || ($oddCount === 10 && $evenCount === 5) => 0.54,
+            default => 0.22,
+        };
+    }
+
+    protected function sequenceQuality(int $longestSequence): float
+    {
+        return match (true) {
+            $longestSequence >= 3 && $longestSequence <= 6 => 1.00,
+            $longestSequence === 2 || $longestSequence === 7 => 0.68,
+            $longestSequence === 8 => 0.38,
+            default => 0.16,
+        };
+    }
+
+    protected function lineQuality(array $lineDistribution): float
+    {
+        $maxLine = max($lineDistribution);
+        $minLine = min($lineDistribution);
+
+        return match (true) {
+            $maxLine <= 4 && $minLine >= 2 => 1.00,
+            $maxLine <= 5 && $minLine >= 1 => 0.72,
+            $maxLine <= 6 => 0.38,
+            default => 0.16,
+        };
+    }
+
+    protected function frameQuality(int $frameCount, int $middleCount): float
+    {
+        return match (true) {
+            $frameCount >= 8 && $frameCount <= 11 => 1.00,
+            $frameCount === 7 || $frameCount === 12 => 0.76,
+            $frameCount === 6 || $frameCount === 13 => 0.42,
+            default => 0.18,
+        };
+    }
+
+    protected function clusterQuality(float $clusterStrength): float
+    {
+        return match (true) {
+            $clusterStrength >= 11 => 1.00,
+            $clusterStrength >= 9 => 0.88,
+            $clusterStrength >= 7 => 0.66,
+            $clusterStrength >= 5 => 0.42,
+            default => 0.20,
+        };
+    }
+
+    protected function quadrantQuality(array $quadrantDistribution): float
+    {
+        $max = max($quadrantDistribution);
+        $min = min($quadrantDistribution);
+
+        return match (true) {
+            $max <= 5 && $min >= 2 => 1.00,
+            $max <= 6 && $min >= 1 => 0.72,
+            $max <= 7 => 0.38,
+            default => 0.16,
+        };
+    }
+
+    protected function lineDistribution(array $game): array
+    {
+        $lines = [0, 0, 0, 0, 0];
+
+        foreach ($game as $number) {
+            $index = (int) floor(($number - 1) / 5);
+            $lines[$index]++;
+        }
+
+        return $lines;
     }
 
     protected function longestSequence(array $game): int
@@ -139,8 +394,8 @@ class GameScoringService
             return 0;
         }
 
-        $current = 1;
         $longest = 1;
+        $current = 1;
 
         for ($i = 1; $i < count($game); $i++) {
             if ($game[$i] === $game[$i - 1] + 1) {
@@ -152,6 +407,19 @@ class GameScoringService
         }
 
         return $longest;
+    }
+
+    protected function frameCount(array $game): int
+    {
+        $frameNumbers = [
+            1, 2, 3, 4, 5,
+            6, 10,
+            11, 15,
+            16, 20,
+            21, 22, 23, 24, 25,
+        ];
+
+        return count(array_intersect($game, $frameNumbers));
     }
 
     protected function clusterStrength(array $game): float
@@ -174,7 +442,26 @@ class GameScoringService
             $clusters += $run;
         }
 
-        return $clusters / 15;
+        return $clusters;
+    }
+
+    protected function quadrantDistribution(array $game): array
+    {
+        $quadrants = [0, 0, 0, 0];
+
+        foreach ($game as $number) {
+            if ($number >= 1 && $number <= 7) {
+                $quadrants[0]++;
+            } elseif ($number >= 8 && $number <= 13) {
+                $quadrants[1]++;
+            } elseif ($number >= 14 && $number <= 19) {
+                $quadrants[2]++;
+            } else {
+                $quadrants[3]++;
+            }
+        }
+
+        return $quadrants;
     }
 
     protected function extractNumbers(LotofacilConcurso $concurso): array

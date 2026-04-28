@@ -2,53 +2,879 @@
 
 namespace App\Services\Lottus\Generation;
 
+use App\Services\Lottus\Generation\ClusterEliteLockService;
+use App\Services\Lottus\Generation\EliteSelectionAuditService;
+use App\Services\Lottus\Generation\EliteSurvivalService;
+
 class PortfolioOptimizerService
 {
-    public function optimize(array $rankedGames, int $quantidade): array
+    protected array $tuning;
+
+    public function __construct(?array $tuning = null)
     {
-        if ($quantidade <= 0 || empty($rankedGames)) {
-            return [];
+        $this->tuning = $tuning ?? config('lottus_portfolio_tuning.default', []);
+    }
+
+    public function optimize(array $rankedGames, int $quantidade): array
+{
+    if ($quantidade <= 0 || empty($rankedGames)) {
+        return [];
+    }
+
+    $originalPool = array_values($rankedGames);
+    $pool = array_values($rankedGames);
+
+    usort($pool, function ($a, $b) {
+        return $this->rawPreservationValue($b) <=> $this->rawPreservationValue($a);
+    });
+
+    $selected = [];
+
+    /*
+    |--------------------------------------------------------------------------
+    | HARD RAW LOCK
+    |--------------------------------------------------------------------------
+    | Regra absoluta:
+    | Os melhores RAW entram SEM PASSAR por diversity, cluster ou filtros.
+    | Isso impede que o portfolio destrua elite.
+    */
+
+    $hardRawLockCount = min(
+        $quantidade,
+        (int) $this->tuningValue('elite_lock.absolute_locked_limit', 4)
+    );
+
+    $topRawCandidates = array_slice($pool, 0, $hardRawLockCount);
+
+    foreach ($topRawCandidates as $candidate) {
+        if (! $this->alreadySelected($candidate, $selected)) {
+            $selected[] = $candidate;
         }
+    }
 
-        $pool = array_values($rankedGames);
+    /*
+    |--------------------------------------------------------------------------
+    | PIPELINE NORMAL
+    |--------------------------------------------------------------------------
+    */
 
-        usort($pool, function ($a, $b) {
-            $valueA = $this->selectionValue($a);
-            $valueB = $this->selectionValue($b);
+    foreach (app(EliteSurvivalService::class)->extract($originalPool, $this->tuning, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'elite_survival')) {
+            continue;
+        }
+    }
 
-            return $valueB <=> $valueA;
-        });
+    foreach (app(ClusterEliteLockService::class)->extract($originalPool, $selected, $this->tuning, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'cluster_elite_lock')) {
+            continue;
+        }
+    }
 
-        $selected = [];
-        $seen = [];
+    foreach ($this->extractOriginalRankingLockedCandidates($originalPool, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'original_lock')) {
+            continue;
+        }
+    }
+
+    foreach ($this->extractAbsoluteLockedCandidates($pool, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'absolute_lock')) {
+            continue;
+        }
+    }
+
+    foreach ($this->extractEliteLockedCandidates($pool, $selected, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'elite_lock')) {
+            continue;
+        }
+    }
+
+    foreach ($this->extractCorePreservedCandidates($pool, $selected, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'core_preservation')) {
+            continue;
+        }
+    }
+
+    foreach ($this->extractNearWinnerCandidates($pool, $selected, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'near_winner')) {
+            continue;
+        }
+    }
+
+    foreach ($this->extractRawKillerCandidates($pool, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'raw_killer')) {
+            continue;
+        }
+    }
+
+    while (count($selected) < $quantidade) {
+        $bestCandidate = null;
+        $bestValue = null;
 
         foreach ($pool as $candidate) {
-            if (count($selected) >= $quantidade) {
-                break;
-            }
-
-            $key = $this->candidateKey($candidate);
-
-            if (isset($seen[$key])) {
+            if ($this->alreadySelected($candidate, $selected)) {
                 continue;
             }
 
-            $seen[$key] = true;
-            $selected[] = $candidate;
+            $value = $this->lateElitePreservationValue($candidate, $selected);
+
+            if ($bestCandidate === null || $value > $bestValue) {
+                $bestCandidate = $candidate;
+                $bestValue = $value;
+            }
         }
 
-        return array_slice($selected, 0, $quantidade);
+        if ($bestCandidate === null) {
+            break;
+        }
+
+        $selected[] = $bestCandidate;
     }
 
-    protected function selectionValue(array $candidate): float
+    $selected = array_slice($selected, 0, $quantidade);
+
+    app(EliteSelectionAuditService::class)->audit(
+        $originalPool,
+        $selected,
+        $this->tuning,
+        $quantidade
+    );
+
+    return $selected;
+}
+
+    protected function tryAddCandidate(array &$selected, array $candidate, int $quantidade, string $phase): bool
     {
-        return
-            ((float) ($candidate['score'] ?? 0.0) * 0.70) +
-            ((float) ($candidate['extreme_score'] ?? 0.0) * 0.30);
+        if (count($selected) >= $quantidade) {
+            return false;
+        }
+
+        if ($this->alreadySelected($candidate, $selected)) {
+            return false;
+        }
+
+        if (! $this->passesControlledDiversityGate($candidate, $selected, $phase)) {
+            return false;
+        }
+
+        $selected[] = $candidate;
+
+        return true;
+    }
+
+    protected function passesControlledDiversityGate(array $candidate, array $selected, string $phase): bool
+    {
+        if (empty($selected)) {
+            return true;
+        }
+
+        $enabled = (bool) $this->tuningValue('controlled_diversity.enabled', true);
+
+        if (! $enabled) {
+            return true;
+        }
+
+        $maxOverlap = $this->maxOverlapWithSelected($candidate, $selected);
+
+        if ($maxOverlap === 15) {
+            return false;
+        }
+
+        $clone14Limit = (int) $this->tuningValue('controlled_diversity.max_overlap_14_count', 1);
+        $clone13Limit = (int) $this->tuningValue('controlled_diversity.max_overlap_13_count', 3);
+
+        if ($maxOverlap >= 14 && $this->countCandidatesWithOverlap($candidate, $selected, 14) >= $clone14Limit) {
+            return $this->isCriticalEliteCandidate($candidate, $selected);
+        }
+
+        if ($maxOverlap >= 13 && $this->countCandidatesWithOverlap($candidate, $selected, 13) >= $clone13Limit) {
+            return $this->isCriticalEliteCandidate($candidate, $selected);
+        }
+
+        if (count($selected) >= 2 && $maxOverlap > (int) $this->tuningValue('controlled_diversity.default_max_overlap_after_two', 13)) {
+            return $this->isCriticalEliteCandidate($candidate, $selected);
+        }
+
+        return true;
+    }
+
+    protected function isCriticalEliteCandidate(array $candidate, array $selected): bool
+    {
+        $rawValue = $this->rawPreservationValue($candidate);
+        $topSelectedRaw = 0.0;
+
+        foreach ($selected as $selectedGame) {
+            $topSelectedRaw = max($topSelectedRaw, $this->rawPreservationValue($selectedGame));
+        }
+
+        if ($topSelectedRaw <= 0) {
+            return false;
+        }
+
+        $criticalThreshold = (float) $this->tuningValue('controlled_diversity.critical_raw_threshold', 1.03);
+
+        if ($rawValue >= ($topSelectedRaw * $criticalThreshold)) {
+            return true;
+        }
+
+        $score = (float) ($candidate['score'] ?? 0.0);
+        $extremeScore = (float) ($candidate['extreme_score'] ?? 0.0);
+        $statScore = (float) ($candidate['stat_score'] ?? 0.0);
+
+        return $score >= (float) $this->tuningValue('controlled_diversity.critical_score_gate', 0.90)
+            && $extremeScore >= (float) $this->tuningValue('controlled_diversity.critical_extreme_gate', 0.88)
+            && $statScore >= (float) $this->tuningValue('controlled_diversity.critical_stat_gate', 0.86);
+    }
+
+    protected function countCandidatesWithOverlap(array $candidate, array $selected, int $minimumOverlap): int
+    {
+        $count = 0;
+
+        foreach ($selected as $selectedGame) {
+            if ($this->overlap($candidate, $selectedGame) >= $minimumOverlap) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    protected function extractOriginalRankingLockedCandidates(array $originalPool, int $quantidade): array
+    {
+        if (empty($originalPool)) {
+            return [];
+        }
+
+        $limit = min(
+            $quantidade,
+            (int) $this->tuningValue('elite_lock.original_ranking_locked_limit', 3)
+        );
+
+        return array_slice($originalPool, 0, $limit);
+    }
+
+    protected function extractAbsoluteLockedCandidates(array $pool, int $quantidade): array
+    {
+        if (empty($pool)) {
+            return [];
+        }
+
+        $limit = min(
+            $quantidade,
+            (int) $this->tuningValue('elite_lock.absolute_locked_limit', 2)
+        );
+
+        return array_slice($pool, 0, $limit);
+    }
+
+    protected function extractEliteLockedCandidates(array $pool, array $selected, int $quantidade): array
+    {
+        if (empty($pool)) {
+            return [];
+        }
+
+        $topValue = $this->rawPreservationValue($pool[0]);
+
+        if ($topValue <= 0) {
+            return [];
+        }
+
+        $threshold = $topValue * (float) $this->tuningValue('elite_lock.elite_threshold', 0.90);
+        $eliteLimit = (int) $this->tuningValue('elite_lock.elite_limit', 1);
+        $eliteCandidates = [];
+
+        foreach ($pool as $candidate) {
+            if ($this->alreadySelected($candidate, $selected)) {
+                continue;
+            }
+
+            if ($this->rawPreservationValue($candidate) >= $threshold) {
+                $eliteCandidates[] = $candidate;
+            }
+        }
+
+        usort($eliteCandidates, function ($a, $b) {
+            return $this->rawPreservationValue($b) <=> $this->rawPreservationValue($a);
+        });
+
+        return array_slice($eliteCandidates, 0, $eliteLimit);
+    }
+
+    protected function extractCorePreservedCandidates(array $pool, array $selected, int $quantidade): array
+    {
+        if (empty($pool) || empty($selected)) {
+            return [];
+        }
+
+        $coreCandidates = [];
+        $minOverlap = (int) $this->tuningValue('core_preservation.min_overlap', 12);
+        $rawBoost = (float) $this->tuningValue('core_preservation.raw_boost', 0.35);
+
+        foreach ($pool as $candidate) {
+            if ($this->alreadySelected($candidate, $selected)) {
+                continue;
+            }
+
+            $maxOverlap = $this->maxOverlapWithSelected($candidate, $selected);
+            $score = (float) ($candidate['score'] ?? 0.0);
+            $extremeScore = (float) ($candidate['extreme_score'] ?? 0.0);
+            $statScore = (float) ($candidate['stat_score'] ?? 0.0);
+            $repeatCount = (int) ($candidate['repetidas_ultimo_concurso'] ?? 0);
+            $cycleHits = (int) ($candidate['cycle_hits'] ?? 0);
+            $sum = (int) ($candidate['soma'] ?? 0);
+            $oddCount = (int) ($candidate['impares'] ?? 0);
+            $sequence = (int) ($candidate['analise']['sequencia_maxima'] ?? 0);
+
+            if (
+                $maxOverlap >= $minOverlap &&
+                $repeatCount >= 7 &&
+                $repeatCount <= 12 &&
+                $cycleHits >= 1 &&
+                $sum >= 150 &&
+                $sum <= 235 &&
+                $oddCount >= 5 &&
+                $oddCount <= 10 &&
+                $sequence >= 2 &&
+                $sequence <= 8 &&
+                ($score > 0 || $extremeScore > 0 || $statScore > 0)
+            ) {
+                $coreCandidates[] = $candidate;
+            }
+        }
+
+        usort($coreCandidates, function ($a, $b) use ($selected, $rawBoost) {
+            return ($this->corePreservationValue($b, $selected) + ($this->rawPreservationValue($b) * $rawBoost))
+                <=>
+                ($this->corePreservationValue($a, $selected) + ($this->rawPreservationValue($a) * $rawBoost));
+        });
+
+        return array_slice($coreCandidates, 0, max(1, $quantidade - count($selected)));
+    }
+
+    protected function extractNearWinnerCandidates(array $pool, array $selected, int $quantidade): array
+    {
+        if (empty($pool) || empty($selected)) {
+            return [];
+        }
+
+        $scores = array_map(
+            fn ($candidate) => (float) ($candidate['score'] ?? 0.0),
+            $pool
+        );
+
+        $extremeScores = array_map(
+            fn ($candidate) => (float) ($candidate['extreme_score'] ?? 0.0),
+            $pool
+        );
+
+        $statScores = array_map(
+            fn ($candidate) => (float) ($candidate['stat_score'] ?? 0.0),
+            $pool
+        );
+
+        rsort($scores);
+        rsort($extremeScores);
+        rsort($statScores);
+
+        $topScore = $scores[0] ?? 0.0;
+        $topExtreme = $extremeScores[0] ?? 0.0;
+        $topStat = $statScores[0] ?? 0.0;
+
+        $nearWinners = [];
+
+        foreach ($pool as $candidate) {
+            if ($this->alreadySelected($candidate, $selected)) {
+                continue;
+            }
+
+            $score = (float) ($candidate['score'] ?? 0.0);
+            $extremeScore = (float) ($candidate['extreme_score'] ?? 0.0);
+            $statScore = (float) ($candidate['stat_score'] ?? 0.0);
+            $repeatCount = (int) ($candidate['repetidas_ultimo_concurso'] ?? 0);
+            $cycleHits = (int) ($candidate['cycle_hits'] ?? 0);
+            $sum = (int) ($candidate['soma'] ?? 0);
+            $oddCount = (int) ($candidate['impares'] ?? 0);
+            $sequence = (int) ($candidate['analise']['sequencia_maxima'] ?? 0);
+
+            $maxOverlap = $this->maxOverlapWithSelected($candidate, $selected);
+
+            $isNearWinner = false;
+
+            if (
+                $maxOverlap >= 12 &&
+                $score >= ($topScore * (float) $this->tuningValue('near_winner.score_threshold', 0.82)) &&
+                $extremeScore >= ($topExtreme * (float) $this->tuningValue('near_winner.extreme_threshold', 0.80))
+            ) {
+                $isNearWinner = true;
+            }
+
+            if (
+                $maxOverlap >= 11 &&
+                $score >= ($topScore * 0.86) &&
+                $statScore >= ($topStat * (float) $this->tuningValue('near_winner.stat_threshold', 0.82)) &&
+                $repeatCount >= 7 &&
+                $repeatCount <= 12
+            ) {
+                $isNearWinner = true;
+            }
+
+            if (
+                $maxOverlap >= 11 &&
+                $extremeScore >= ($topExtreme * 0.78) &&
+                $repeatCount >= 7 &&
+                $repeatCount <= 12 &&
+                $cycleHits >= 1 &&
+                $sum >= 150 &&
+                $sum <= 235 &&
+                $oddCount >= 5 &&
+                $oddCount <= 10 &&
+                $sequence >= 2 &&
+                $sequence <= 8
+            ) {
+                $isNearWinner = true;
+            }
+
+            if ($isNearWinner) {
+                $nearWinners[] = $candidate;
+            }
+        }
+
+        usort($nearWinners, function ($a, $b) {
+            return $this->rawPreservationValue($b) <=> $this->rawPreservationValue($a);
+        });
+
+        return array_slice($nearWinners, 0, max(1, $quantidade - count($selected)));
+    }
+
+    protected function extractRawKillerCandidates(array $pool, int $quantidade): array
+    {
+        if (empty($pool)) {
+            return [];
+        }
+
+        $scores = array_map(
+            fn ($candidate) => (float) ($candidate['score'] ?? 0.0),
+            $pool
+        );
+
+        $extremeScores = array_map(
+            fn ($candidate) => (float) ($candidate['extreme_score'] ?? 0.0),
+            $pool
+        );
+
+        $statScores = array_map(
+            fn ($candidate) => (float) ($candidate['stat_score'] ?? 0.0),
+            $pool
+        );
+
+        rsort($scores);
+        rsort($extremeScores);
+        rsort($statScores);
+
+        $topScore = $scores[0] ?? 0.0;
+        $topExtreme = $extremeScores[0] ?? 0.0;
+        $topStat = $statScores[0] ?? 0.0;
+
+        $scoreThreshold = $topScore * (float) $this->tuningValue('raw_killer.score_threshold', 0.90);
+        $extremeThreshold = $topExtreme * (float) $this->tuningValue('raw_killer.extreme_threshold', 0.88);
+        $statThreshold = $topStat * (float) $this->tuningValue('raw_killer.stat_threshold', 0.86);
+
+        $killers = [];
+
+        foreach ($pool as $candidate) {
+            $score = (float) ($candidate['score'] ?? 0.0);
+            $extremeScore = (float) ($candidate['extreme_score'] ?? 0.0);
+            $statScore = (float) ($candidate['stat_score'] ?? 0.0);
+            $repeatCount = (int) ($candidate['repetidas_ultimo_concurso'] ?? 0);
+            $cycleHits = (int) ($candidate['cycle_hits'] ?? 0);
+            $sum = (int) ($candidate['soma'] ?? 0);
+            $oddCount = (int) ($candidate['impares'] ?? 0);
+            $sequence = (int) ($candidate['analise']['sequencia_maxima'] ?? 0);
+
+            $isKiller = false;
+
+            if (
+                $score >= $scoreThreshold &&
+                $extremeScore >= $extremeThreshold
+            ) {
+                $isKiller = true;
+            }
+
+            if (
+                $score >= ($topScore * (float) $this->tuningValue('raw_killer.fallback_score_threshold', 0.86)) &&
+                $statScore >= $statThreshold &&
+                $repeatCount >= 7 &&
+                $repeatCount <= 12
+            ) {
+                $isKiller = true;
+            }
+
+            if (
+                $extremeScore >= ($topExtreme * (float) $this->tuningValue('raw_killer.fallback_extreme_threshold', 0.84)) &&
+                $repeatCount >= 8 &&
+                $repeatCount <= 11 &&
+                $cycleHits >= 1 &&
+                $sum >= 150 &&
+                $sum <= 235 &&
+                $oddCount >= 5 &&
+                $oddCount <= 10 &&
+                $sequence >= 2 &&
+                $sequence <= 8
+            ) {
+                $isKiller = true;
+            }
+
+            if ($isKiller) {
+                $killers[] = $candidate;
+            }
+        }
+
+        usort($killers, function ($a, $b) {
+            return $this->rawPreservationValue($b) <=> $this->rawPreservationValue($a);
+        });
+
+        return array_slice($killers, 0, max(1, $quantidade - 2));
+    }
+
+    protected function lateElitePreservationValue(array $candidate, array $selected): float
+    {
+        $rawValue = $this->rawPreservationValue($candidate);
+
+        if (empty($selected)) {
+            return $this->portfolioExpansionValue($candidate, $selected);
+        }
+
+        $topSelectedRaw = max(array_map(
+            fn ($game) => $this->rawPreservationValue($game),
+            $selected
+        ));
+
+        $lateEliteThreshold = (float) $this->tuningValue('elite_lock.late_elite_threshold', 0.94);
+        $lateEliteMultiplier = (float) $this->tuningValue('elite_lock.late_elite_multiplier', 100.0);
+
+        if ($topSelectedRaw > 0 && $rawValue >= ($topSelectedRaw * $lateEliteThreshold)) {
+            return $rawValue * $lateEliteMultiplier;
+        }
+
+        return $this->portfolioExpansionValue($candidate, $selected);
+    }
+
+    protected function eliteOverrideValue(array $candidate, array $selected): ?float
+    {
+        $rawValue = $this->rawPreservationValue($candidate);
+
+        if ($rawValue <= 0 || empty($selected)) {
+            return null;
+        }
+
+        $topRaw = 0.0;
+
+        foreach ($selected as $game) {
+            $topRaw = max($topRaw, $this->rawPreservationValue($game));
+        }
+
+        if ($topRaw <= 0) {
+            return null;
+        }
+
+        $threshold = $topRaw * (float) $this->tuningValue('elite_override.threshold', 0.985);
+
+        $score = (float) ($candidate['score'] ?? 0.0);
+        $extremeScore = (float) ($candidate['extreme_score'] ?? 0.0);
+        $statScore = (float) ($candidate['stat_score'] ?? 0.0);
+
+        $scoreGate = (float) $this->tuningValue('elite_override.score_gate', 0.80);
+        $extremeGate = (float) $this->tuningValue('elite_override.extreme_gate', 0.78);
+        $statGate = (float) $this->tuningValue('elite_override.stat_gate', 0.75);
+
+        if (
+            $rawValue >= $threshold &&
+            $score >= $scoreGate &&
+            $extremeScore >= $extremeGate &&
+            $statScore >= $statGate
+        ) {
+            return $rawValue * (float) $this->tuningValue('elite_override.multiplier', 9999.0);
+        }
+
+        return null;
+    }
+
+    protected function portfolioExpansionValue(array $candidate, array $selected): float
+    {
+        $eliteOverride = $this->eliteOverrideValue($candidate, $selected);
+
+        if ($eliteOverride !== null) {
+            return $eliteOverride;
+        }
+
+        $rawValue = $this->rawPreservationValue($candidate);
+        $diversityValue = $this->diversityValue($candidate, $selected);
+        $coverageValue = $this->coverageValue($candidate, $selected);
+        $clonePenalty = $this->clonePenalty($candidate, $selected);
+        $coreBonus = $this->coreBonus($candidate, $selected);
+
+        $rawWeight = (float) $this->tuningValue('portfolio_expansion.raw_weight', 0.985);
+        $diversityWeight = (float) $this->tuningValue('portfolio_expansion.diversity_weight', 0.004);
+        $coverageWeight = (float) $this->tuningValue('portfolio_expansion.coverage_weight', 0.003);
+        $coreBonusMultiplier = (float) $this->tuningValue('portfolio_expansion.core_bonus_multiplier', 1.30);
+
+        return ($rawValue * $rawWeight)
+            + ($diversityValue * $diversityWeight)
+            + ($coverageValue * $coverageWeight)
+            + ($coreBonus * $coreBonusMultiplier)
+            - $clonePenalty;
+    }
+
+    protected function rawPreservationValue(array $candidate): float
+    {
+        $score = (float) ($candidate['score'] ?? 0.0);
+        $extremeScore = (float) ($candidate['extreme_score'] ?? 0.0);
+        $statScore = (float) ($candidate['stat_score'] ?? 0.0);
+        $structureScore = (float) ($candidate['structure_score'] ?? 0.0);
+        $repeatCount = (int) ($candidate['repetidas_ultimo_concurso'] ?? 0);
+        $cycleHits = (int) ($candidate['cycle_hits'] ?? 0);
+        $sum = (int) ($candidate['soma'] ?? 0);
+        $oddCount = (int) ($candidate['impares'] ?? 0);
+        $sequence = (int) ($candidate['analise']['sequencia_maxima'] ?? 0);
+        $clusterStrength = (float) ($candidate['analise']['cluster_strength'] ?? 0.0);
+        $frameCount = (int) ($candidate['analise']['moldura'] ?? 0);
+
+        $value = 0.0;
+
+        $value += $score * 100;
+        $value += $extremeScore * 42;
+        $value += $statScore * 38;
+        $value += $structureScore * 2;
+
+        if ($repeatCount >= 8 && $repeatCount <= 11) {
+            $value += 88;
+        } elseif ($repeatCount === 7 || $repeatCount === 12) {
+            $value += 52;
+        } elseif ($repeatCount === 6 || $repeatCount === 13) {
+            $value += 20;
+        }
+
+        if ($cycleHits >= 4) {
+            $value += 50;
+        } elseif ($cycleHits === 3) {
+            $value += 42;
+        } elseif ($cycleHits === 2) {
+            $value += 32;
+        } elseif ($cycleHits === 1) {
+            $value += 22;
+        }
+
+        if ($sum >= 160 && $sum <= 225) {
+            $value += 8;
+        } elseif ($sum >= 150 && $sum <= 235) {
+            $value += 4;
+        }
+
+        if ($oddCount >= 6 && $oddCount <= 9) {
+            $value += 8;
+        } elseif ($oddCount === 5 || $oddCount === 10) {
+            $value += 4;
+        }
+
+        if ($sequence >= 3 && $sequence <= 6) {
+            $value += 6;
+        } elseif ($sequence === 2 || $sequence === 7 || $sequence === 8) {
+            $value += 3;
+        }
+
+        if ($clusterStrength >= 9) {
+            $value += 8;
+        } elseif ($clusterStrength >= 7) {
+            $value += 5;
+        } elseif ($clusterStrength >= 5) {
+            $value += 2;
+        }
+
+        if ($frameCount >= 7 && $frameCount <= 12) {
+            $value += 3;
+        }
+
+        return $value;
+    }
+
+    protected function corePreservationValue(array $candidate, array $selected): float
+    {
+        $rawValue = $this->rawPreservationValue($candidate);
+        $maxOverlap = $this->maxOverlapWithSelected($candidate, $selected);
+        $clonePenalty = $this->clonePenalty($candidate, $selected);
+
+        return $rawValue + ($maxOverlap * 90) - ($clonePenalty * 0.20);
+    }
+
+    protected function coreBonus(array $candidate, array $selected): float
+    {
+        $maxOverlap = $this->maxOverlapWithSelected($candidate, $selected);
+
+        if ($maxOverlap >= 14) {
+            return (float) $this->tuningValue('core_bonus.overlap_14', 380.0);
+        }
+
+        if ($maxOverlap === 13) {
+            return (float) $this->tuningValue('core_bonus.overlap_13', 240.0);
+        }
+
+        if ($maxOverlap === 12) {
+            return (float) $this->tuningValue('core_bonus.overlap_12', 120.0);
+        }
+
+        if ($maxOverlap === 11) {
+            return (float) $this->tuningValue('core_bonus.overlap_11', 35.0);
+        }
+
+        if ($maxOverlap === 10) {
+            return (float) $this->tuningValue('core_bonus.overlap_10', 0.0);
+        }
+
+        return 0.0;
+    }
+
+    protected function diversityValue(array $candidate, array $selected): float
+    {
+        if (empty($selected)) {
+            return 0.0;
+        }
+
+        $candidateNumbers = $candidate['dezenas'] ?? [];
+        $totalDistance = 0.0;
+        $comparisons = 0;
+
+        foreach ($selected as $selectedGame) {
+            $selectedNumbers = $selectedGame['dezenas'] ?? [];
+            $intersection = count(array_intersect($candidateNumbers, $selectedNumbers));
+            $distance = 15 - $intersection;
+
+            $totalDistance += $distance;
+            $comparisons++;
+        }
+
+        if ($comparisons === 0) {
+            return 0.0;
+        }
+
+        $averageDistance = $totalDistance / $comparisons;
+
+        return $averageDistance * (float) $this->tuningValue('diversity.average_distance_multiplier', 7.0);
+    }
+
+    protected function coverageValue(array $candidate, array $selected): float
+    {
+        $candidateNumbers = $candidate['dezenas'] ?? [];
+        $covered = [];
+
+        foreach ($selected as $selectedGame) {
+            foreach (($selectedGame['dezenas'] ?? []) as $number) {
+                $covered[$number] = true;
+            }
+        }
+
+        $newNumbers = 0;
+
+        foreach ($candidateNumbers as $number) {
+            if (! isset($covered[$number])) {
+                $newNumbers++;
+            }
+        }
+
+        $value = $newNumbers * 5;
+
+        $repeatCount = (int) ($candidate['repetidas_ultimo_concurso'] ?? 0);
+        $cycleHits = (int) ($candidate['cycle_hits'] ?? 0);
+
+        if ($repeatCount >= 7 && $repeatCount <= 12) {
+            $value += 4;
+        }
+
+        if ($cycleHits >= 1) {
+            $value += $cycleHits * 2;
+        }
+
+        return $value;
+    }
+
+    protected function clonePenalty(array $candidate, array $selected): float
+    {
+        if (empty($selected)) {
+            return 0.0;
+        }
+
+        $candidateNumbers = $candidate['dezenas'] ?? [];
+        $penalty = 0.0;
+
+        foreach ($selected as $selectedGame) {
+            $selectedNumbers = $selectedGame['dezenas'] ?? [];
+            $intersection = count(array_intersect($candidateNumbers, $selectedNumbers));
+
+            if ($intersection === 15) {
+                $penalty += (float) $this->tuningValue('clone_penalty.overlap_15', 999.0);
+            } elseif ($intersection >= 14) {
+                $penalty += (float) $this->tuningValue('clone_penalty.overlap_14', 2.0);
+            } elseif ($intersection === 13) {
+                $penalty += (float) $this->tuningValue('clone_penalty.overlap_13', 0.7);
+            } elseif ($intersection <= (int) $this->tuningValue('clone_penalty.low_overlap_limit', 6)) {
+                $penalty += (float) $this->tuningValue('clone_penalty.low_overlap_penalty', 8.0);
+            }
+        }
+
+        return $penalty;
+    }
+
+    protected function maxOverlapWithSelected(array $candidate, array $selected): int
+    {
+        $candidateNumbers = $candidate['dezenas'] ?? [];
+        $maxOverlap = 0;
+
+        foreach ($selected as $selectedGame) {
+            $selectedNumbers = $selectedGame['dezenas'] ?? [];
+            $maxOverlap = max($maxOverlap, count(array_intersect($candidateNumbers, $selectedNumbers)));
+        }
+
+        return $maxOverlap;
+    }
+
+    protected function overlap(array $candidate, array $selectedGame): int
+    {
+        return count(array_intersect($candidate['dezenas'] ?? [], $selectedGame['dezenas'] ?? []));
+    }
+
+    protected function alreadySelected(array $candidate, array $selected): bool
+    {
+        $candidateKey = $this->candidateKey($candidate);
+
+        foreach ($selected as $game) {
+            if ($candidateKey === $this->candidateKey($game)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function candidateKey(array $candidate): string
     {
-        return implode('-', $candidate['dezenas'] ?? []);
+        $dezenas = $candidate['dezenas'] ?? [];
+
+        sort($dezenas);
+
+        return implode('-', $dezenas);
+    }
+
+    protected function tuningValue(string $key, mixed $default = null): mixed
+    {
+        $segments = explode('.', $key);
+        $value = $this->tuning;
+
+        foreach ($segments as $segment) {
+            if (! is_array($value) || ! array_key_exists($segment, $value)) {
+                return $default;
+            }
+
+            $value = $value[$segment];
+        }
+
+        return $value;
     }
 }

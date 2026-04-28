@@ -14,44 +14,34 @@ class CandidateGeneratorService
     ): array {
         $maxAttempts = (int) config('lottus.generator.attempts', 2500);
         $targetCandidates = max(
-            $quantidade * 60,
+            $quantidade,
             (int) config('lottus.generator.target_candidates', 200)
         );
 
-        $lastDraw = array_values(array_unique(array_map('intval', $weights['last_draw_numbers'] ?? [])));
-        sort($lastDraw);
-
-        $cycleMissing = array_values(array_unique(array_map('intval', $weights['faltantes'] ?? [])));
-        sort($cycleMissing);
-
-        $baseScores = $this->buildBaseScores(
-            $frequencyContext,
-            $delayContext,
-            $correlationContext,
-            $weights,
-            $lastDraw,
-            $cycleMissing
-        );
-
-        $strategies = $this->buildStrategies($lastDraw, $cycleMissing);
         $candidates = [];
         $seen = [];
+
+        $profile = $this->buildProfileFromWeights($weights);
+
+        $lastDraw = $weights['last_draw_numbers'] ?? [];
+        $cycleMissing = $weights['faltantes'] ?? [];
+
         $attempt = 0;
 
         while (count($candidates) < $targetCandidates && $attempt < $maxAttempts) {
             $attempt++;
 
-            $strategy = $strategies[array_rand($strategies)];
-
             $game = $this->buildGame(
-                $baseScores,
+                $frequencyContext,
+                $delayContext,
                 $correlationContext,
+                $weights,
                 $lastDraw,
                 $cycleMissing,
-                $strategy
+                $profile
             );
 
-            if (! $this->passesTechnicalIntegrity($game)) {
+            if (! $this->passesSoftFilters($game, $structureContext, $profile, $lastDraw, $cycleMissing)) {
                 continue;
             }
 
@@ -68,110 +58,90 @@ class CandidateGeneratorService
         return $candidates;
     }
 
-    protected function buildStrategies(array $lastDraw, array $cycleMissing): array
+    protected function buildProfileFromWeights(array $weights): array
     {
-        $lastDrawCount = count($lastDraw);
-        $cycleCount = count($cycleMissing);
+        $frequency = (float) ($weights['frequency'] ?? config('lottus.weights.frequency', 0.25));
+        $delay = (float) ($weights['delay'] ?? config('lottus.weights.delay', 0.25));
+        $correlation = (float) ($weights['correlation'] ?? config('lottus.weights.correlation', 0.25));
+        $cycle = (float) ($weights['cycle'] ?? config('lottus.weights.cycle', 0.25));
+
+        if ($cycle >= 0.28 || $delay >= 0.28 || $correlation >= 0.28) {
+            return [
+                'name' => 'aggressive',
+                'repeat_min' => 7,
+                'repeat_max' => 12,
+                'cycle_min_hits' => 1,
+                'sum_tolerance' => 26,
+                'odd_tolerance' => 3,
+                'top_band_initial' => 11,
+                'top_band_dynamic' => 15,
+                'conviction_gate' => 0.38,
+                'elite_gate' => 0.64,
+            ];
+        }
+
+        if ($frequency >= 0.28) {
+            return [
+                'name' => 'frequency_biased',
+                'repeat_min' => 7,
+                'repeat_max' => 12,
+                'cycle_min_hits' => 1,
+                'sum_tolerance' => 24,
+                'odd_tolerance' => 3,
+                'top_band_initial' => 12,
+                'top_band_dynamic' => 16,
+                'conviction_gate' => 0.36,
+                'elite_gate' => 0.62,
+            ];
+        }
 
         return [
-            [
-                'name' => 'trend_soft',
-                'repeat_min' => min(6, $lastDrawCount),
-                'repeat_max' => min(9, $lastDrawCount),
-                'cycle_min' => min(1, $cycleCount),
-                'cycle_max' => min(4, max(1, $cycleCount)),
-                'band' => 16,
-                'exploration' => 0.22,
-            ],
-            [
-                'name' => 'trend_hard',
-                'repeat_min' => min(8, $lastDrawCount),
-                'repeat_max' => min(11, $lastDrawCount),
-                'cycle_min' => min(1, $cycleCount),
-                'cycle_max' => min(5, max(1, $cycleCount)),
-                'band' => 14,
-                'exploration' => 0.18,
-            ],
-            [
-                'name' => 'recovery_cycle',
-                'repeat_min' => min(4, $lastDrawCount),
-                'repeat_max' => min(8, $lastDrawCount),
-                'cycle_min' => min(2, max(0, $cycleCount)),
-                'cycle_max' => min(6, max(1, $cycleCount)),
-                'band' => 18,
-                'exploration' => 0.28,
-            ],
-            [
-                'name' => 'balanced_open',
-                'repeat_min' => min(3, $lastDrawCount),
-                'repeat_max' => min(10, $lastDrawCount),
-                'cycle_min' => 0,
-                'cycle_max' => min(5, max(1, $cycleCount)),
-                'band' => 20,
-                'exploration' => 0.34,
-            ],
-            [
-                'name' => 'chaos_hunt',
-                'repeat_min' => min(2, $lastDrawCount),
-                'repeat_max' => min(12, $lastDrawCount),
-                'cycle_min' => 0,
-                'cycle_max' => min(6, max(1, $cycleCount)),
-                'band' => 25,
-                'exploration' => 0.48,
-            ],
+            'name' => 'balanced',
+            'repeat_min' => 7,
+            'repeat_max' => 12,
+            'cycle_min_hits' => 1,
+            'sum_tolerance' => 25,
+            'odd_tolerance' => 3,
+            'top_band_initial' => 12,
+            'top_band_dynamic' => 16,
+            'conviction_gate' => 0.36,
+            'elite_gate' => 0.62,
         ];
     }
 
     protected function buildGame(
-        array $baseScores,
+        array $frequencyContext,
+        array $delayContext,
         array $correlationContext,
+        array $weights,
         array $lastDraw,
         array $cycleMissing,
-        array $strategy
+        array $profile
     ): array {
         $selected = [];
 
-        $repeatTarget = empty($lastDraw)
-            ? 0
-            : rand($strategy['repeat_min'], max($strategy['repeat_min'], $strategy['repeat_max']));
+        $allScores = $this->buildBaseScores(
+            $frequencyContext,
+            $delayContext,
+            $correlationContext,
+            $weights,
+            $lastDraw,
+            $cycleMissing
+        );
 
-        $cycleTarget = empty($cycleMissing)
-            ? 0
-            : rand($strategy['cycle_min'], max($strategy['cycle_min'], $strategy['cycle_max']));
+        if (! empty($lastDraw)) {
+            $repeatTarget = rand($profile['repeat_min'], $profile['repeat_max']);
 
-        if ($repeatTarget > 0 && ! empty($lastDraw)) {
-            $repeatPool = [];
+            $lastDrawPool = [];
 
             foreach ($lastDraw as $number) {
-                $repeatPool[$number] = $this->seedWeight($number, $baseScores, true, false);
+                $lastDrawPool[$number] = $allScores[$number]['pick_weight'];
             }
 
-            while (count($selected) < $repeatTarget && ! empty($repeatPool)) {
-                $picked = $this->weightedPickExploration($repeatPool, $strategy['band']);
+            while (count($selected) < $repeatTarget && ! empty($lastDrawPool)) {
+                $picked = $this->weightedPickFromTopBand($lastDrawPool, $profile['top_band_initial']);
                 $selected[] = $picked;
-                unset($repeatPool[$picked]);
-            }
-        }
-
-        if ($cycleTarget > 0 && ! empty($cycleMissing)) {
-            $cyclePool = [];
-
-            foreach ($cycleMissing as $number) {
-                if (in_array($number, $selected, true)) {
-                    continue;
-                }
-
-                $cyclePool[$number] = $this->seedWeight($number, $baseScores, false, true);
-            }
-
-            while (
-                count(array_intersect($selected, $cycleMissing)) < $cycleTarget
-                && ! empty($cyclePool)
-                && count($selected) < 15
-            ) {
-                $picked = $this->weightedPickExploration($cyclePool, $strategy['band']);
-                $selected[] = $picked;
-                unset($cyclePool[$picked]);
+                unset($lastDrawPool[$picked]);
             }
         }
 
@@ -184,122 +154,43 @@ class CandidateGeneratorService
                     continue;
                 }
 
-                $pool[$number] = $this->calculateNumberWeight(
+                $weight = $this->calculateWeight(
                     $number,
                     $selected,
-                    $baseScores,
+                    $frequencyContext,
+                    $delayContext,
                     $correlationContext,
-                    $lastDraw,
-                    $cycleMissing,
-                    $strategy,
+                    $weights,
+                    $allScores,
+                    $profile,
                     $remainingSlots
                 );
+
+                if ($weight <= 0) {
+                    continue;
+                }
+
+                $pool[$number] = $weight;
             }
 
-            $picked = $this->weightedPickExploration($pool, $strategy['band']);
+            if (empty($pool)) {
+                foreach (range(1, 25) as $number) {
+                    if (! in_array($number, $selected, true)) {
+                        $pool[$number] = max(
+                            0.0001,
+                            $this->calculateFallbackWeight($number, $selected, $allScores)
+                        );
+                    }
+                }
+            }
+
+            $picked = $this->weightedPickFromTopBand($pool, $profile['top_band_dynamic']);
             $selected[] = $picked;
         }
 
         sort($selected);
 
         return $selected;
-    }
-
-    protected function seedWeight(int $number, array $baseScores, bool $repeatSeed, bool $cycleSeed): float
-    {
-        $base = $baseScores[$number] ?? [
-            'consensus' => 0.1,
-            'frequency' => 0.1,
-            'delay' => 0.1,
-            'cycle' => 0.1,
-        ];
-
-        $weight =
-            ((float) $base['consensus'] * 2.0) +
-            ((float) $base['frequency'] * 0.4) +
-            ((float) $base['delay'] * 0.5) +
-            ((float) $base['cycle'] * 0.7);
-
-        if ($repeatSeed) {
-            $weight *= 1.10;
-        }
-
-        if ($cycleSeed) {
-            $weight *= 1.18;
-        }
-
-        return max($weight, 0.0001);
-    }
-
-    protected function calculateNumberWeight(
-        int $number,
-        array $selected,
-        array $baseScores,
-        array $correlationContext,
-        array $lastDraw,
-        array $cycleMissing,
-        array $strategy,
-        int $remainingSlots
-    ): float {
-        $base = $baseScores[$number] ?? [
-            'frequency' => 0.0,
-            'delay' => 0.0,
-            'cycle' => 0.0,
-            'consensus' => 0.0,
-            'pick_weight' => 0.0001,
-        ];
-
-        $consensus = (float) $base['consensus'];
-        $frequency = (float) $base['frequency'];
-        $delay = (float) $base['delay'];
-        $cycle = (float) $base['cycle'];
-
-        $correlationStrength = $this->correlationWithSelected($number, $selected, $correlationContext);
-        $isLastDraw = in_array($number, $lastDraw, true);
-        $isCycleMissing = in_array($number, $cycleMissing, true);
-
-        $weight =
-            ($consensus * 1.85) +
-            ($frequency * 0.40) +
-            ($delay * 0.55) +
-            ($cycle * 0.80) +
-            ($correlationStrength * 3.40);
-
-        if ($isLastDraw) {
-            $weight += 0.18;
-        }
-
-        if ($isCycleMissing) {
-            $weight += 0.24;
-        }
-
-        if ($this->wouldCreateSequence($number, $selected)) {
-            $weight += 0.22;
-        }
-
-        if ($this->wouldCreateCluster($number, $selected)) {
-            $weight += 0.24;
-        }
-
-        if ($this->wouldCloseGap($number, $selected)) {
-            $weight += 0.18;
-        }
-
-        if ($remainingSlots <= 5) {
-            $weight *= 1.12;
-        }
-
-        if ($remainingSlots <= 3) {
-            $weight *= 1.16;
-        }
-
-        if ($strategy['exploration'] > 0) {
-            $noiseMin = max(0.55, 1 - $strategy['exploration']);
-            $noiseMax = 1 + $strategy['exploration'];
-            $weight *= $this->randomFloat($noiseMin, $noiseMax);
-        }
-
-        return max($weight, 0.0001);
     }
 
     protected function buildBaseScores(
@@ -318,33 +209,33 @@ class CandidateGeneratorService
         $normalizedDelay = $this->normalizeScores($delayScores);
         $normalizedCycle = $this->normalizeScores($cycleScores);
 
-        $baseScores = [];
+        $consensus = [];
 
         foreach (range(1, 25) as $number) {
             $frequency = (float) ($normalizedFrequency[$number] ?? 0.0);
             $delay = (float) ($normalizedDelay[$number] ?? 0.0);
             $cycle = (float) ($normalizedCycle[$number] ?? 0.0);
 
-            $repeatBoost = in_array($number, $lastDraw, true) ? 0.14 : 0.0;
-            $cycleMissingBoost = in_array($number, $cycleMissing, true) ? 0.18 : 0.0;
+            $repeatBoost = in_array($number, $lastDraw, true) ? 0.18 : 0.0;
+            $cycleMissingBoost = in_array($number, $cycleMissing, true) ? 0.16 : 0.0;
 
-            $consensus =
-                ($frequency * 0.36) +
-                ($delay * 0.27) +
-                ($cycle * 0.37) +
+            $consensusValue =
+                ($frequency * 0.34) +
+                ($delay * 0.24) +
+                ($cycle * 0.30) +
                 $repeatBoost +
                 $cycleMissingBoost;
 
-            $baseScores[$number] = [
+            $consensus[$number] = [
                 'frequency' => $frequency,
                 'delay' => $delay,
                 'cycle' => $cycle,
-                'consensus' => $consensus,
-                'pick_weight' => max(0.0001, $consensus),
+                'consensus' => $consensusValue,
+                'pick_weight' => max(0.0001, $consensusValue),
             ];
         }
 
-        return $baseScores;
+        return $consensus;
     }
 
     protected function normalizeScores(array $scores): array
@@ -369,6 +260,95 @@ class CandidateGeneratorService
         }
 
         return $result;
+    }
+
+    protected function calculateWeight(
+        int $number,
+        array $selected,
+        array $frequencyContext,
+        array $delayContext,
+        array $correlationContext,
+        array $weights,
+        array $allScores,
+        array $profile,
+        int $remainingSlots
+    ): float {
+        $base = $allScores[$number] ?? [
+            'frequency' => 0.0,
+            'delay' => 0.0,
+            'cycle' => 0.0,
+            'consensus' => 0.0,
+            'pick_weight' => 0.0001,
+        ];
+
+        $consensus = (float) $base['consensus'];
+        $frequency = (float) $base['frequency'];
+        $delay = (float) $base['delay'];
+        $cycle = (float) $base['cycle'];
+
+        $correlationStrength = $this->correlationWithSelected($number, $selected, $correlationContext);
+        $sequenceBoost = $this->wouldCreateUsefulSequence($number, $selected) ? 0.08 : 0.0;
+        $clusterBoost = $this->wouldStrengthenCluster($number, $selected) ? 0.10 : 0.0;
+        $zoneBoost = $this->zoneConvictionBoost($number, $selected);
+
+        $gate = (float) ($profile['conviction_gate'] ?? 0.36);
+        $eliteGate = (float) ($profile['elite_gate'] ?? 0.62);
+
+        if ($remainingSlots <= 6) {
+            $gate -= 0.08;
+        }
+
+        if ($remainingSlots <= 3) {
+            $gate -= 0.10;
+        }
+
+        if ($consensus < $gate && $correlationStrength < 0.12) {
+            return max(0.0001, $this->calculateFallbackWeight($number, $selected, $allScores) * 0.35);
+        }
+
+        $weight =
+            ($consensus * 2.6) +
+            ($correlationStrength * 1.9) +
+            ($frequency * 0.4) +
+            ($delay * 0.35) +
+            ($cycle * 0.55) +
+            $sequenceBoost +
+            $clusterBoost +
+            $zoneBoost;
+
+        if ($consensus >= $eliteGate) {
+            $weight *= 1.32;
+        }
+
+        if ($correlationStrength >= 0.35) {
+            $weight *= 1.18;
+        }
+
+        if ($cycle >= 0.60) {
+            $weight *= 1.14;
+        }
+
+        if ($delay >= 0.60) {
+            $weight *= 1.08;
+        }
+
+        return max($weight, 0.0001);
+    }
+
+    protected function calculateFallbackWeight(int $number, array $selected, array $allScores): float
+    {
+        $base = $allScores[$number] ?? ['consensus' => 0.1];
+        $weight = (float) ($base['consensus'] ?? 0.1);
+
+        if ($this->wouldCreateUsefulSequence($number, $selected)) {
+            $weight += 0.04;
+        }
+
+        if ($this->wouldStrengthenCluster($number, $selected)) {
+            $weight += 0.05;
+        }
+
+        return $weight;
     }
 
     protected function correlationWithSelected(
@@ -396,18 +376,53 @@ class CandidateGeneratorService
         return max(0.0, $total / $count);
     }
 
-    protected function wouldCreateSequence(int $number, array $selected): bool
+    protected function zoneConvictionBoost(int $number, array $selected): float
     {
+        if (empty($selected)) {
+            return 0.0;
+        }
+
+        $sameRowCount = 0;
+        $sameColumnCount = 0;
+
         foreach ($selected as $picked) {
-            if (abs($picked - $number) === 1) {
-                return true;
+            if ($this->rowOf($picked) === $this->rowOf($number)) {
+                $sameRowCount++;
+            }
+
+            if ($this->columnOf($picked) === $this->columnOf($number)) {
+                $sameColumnCount++;
             }
         }
 
-        return false;
+        $boost = 0.0;
+
+        if ($sameRowCount >= 1) {
+            $boost += 0.04;
+        }
+
+        if ($sameRowCount >= 2) {
+            $boost += 0.05;
+        }
+
+        if ($sameColumnCount >= 1) {
+            $boost += 0.02;
+        }
+
+        return $boost;
     }
 
-    protected function wouldCreateCluster(int $number, array $selected): bool
+    protected function rowOf(int $number): int
+    {
+        return (int) floor(($number - 1) / 5);
+    }
+
+    protected function columnOf(int $number): int
+    {
+        return ($number - 1) % 5;
+    }
+
+    protected function wouldStrengthenCluster(int $number, array $selected): bool
     {
         foreach ($selected as $picked) {
             if (abs($picked - $number) <= 2) {
@@ -418,55 +433,136 @@ class CandidateGeneratorService
         return false;
     }
 
-    protected function wouldCloseGap(int $number, array $selected): bool
-    {
-        foreach ($selected as $picked) {
-            if (abs($picked - $number) === 2) {
-                $middle = (int) (($picked + $number) / 2);
-
-                if (! in_array($middle, $selected, true)) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    protected function passesTechnicalIntegrity(array $game): bool
-    {
-        if (count($game) !== 15) {
+    protected function passesSoftFilters(
+        array $game,
+        array $structureContext,
+        array $profile,
+        array $lastDraw,
+        array $cycleMissing
+    ): bool {
+        if (! $this->passesSoftStructureFilters($game, $structureContext, $profile)) {
             return false;
         }
 
-        $normalized = array_map('intval', $game);
-        sort($normalized);
-
-        if (count(array_unique($normalized)) !== 15) {
+        if (! $this->passesRepeatControl($game, $lastDraw, $profile)) {
             return false;
         }
 
-        foreach ($normalized as $number) {
-            if ($number < 1 || $number > 25) {
-                return false;
-            }
+        if (! $this->passesCycleControl($game, $cycleMissing, $profile)) {
+            return false;
+        }
+
+        if (! $this->passesConvictionDensity($game, $lastDraw, $cycleMissing)) {
+            return false;
         }
 
         return true;
     }
 
-    protected function weightedPickExploration(array $weights, int $bandSize): int
+    protected function passesConvictionDensity(array $game, array $lastDraw, array $cycleMissing): bool
+    {
+        $repeatCount = empty($lastDraw) ? 0 : count(array_intersect($game, $lastDraw));
+        $cycleHits = empty($cycleMissing) ? 0 : count(array_intersect($game, $cycleMissing));
+        $longestSequence = $this->longestSequence($game);
+        $clusterCount = $this->clusterCount($game);
+
+        if (! empty($lastDraw) && $repeatCount < 6) {
+            return false;
+        }
+
+        if (! empty($cycleMissing) && count($cycleMissing) >= 2 && $cycleHits < 1) {
+            return false;
+        }
+
+        if ($longestSequence < 2 || $longestSequence > 8) {
+            return false;
+        }
+
+        if ($clusterCount < 1) {
+            return false;
+        }
+
+        return true;
+    }
+
+    protected function clusterCount(array $game): int
+    {
+        $clusters = 0;
+        $run = 1;
+
+        for ($i = 1; $i < count($game); $i++) {
+            if ($game[$i] <= $game[$i - 1] + 2) {
+                $run++;
+            } else {
+                if ($run >= 2) {
+                    $clusters++;
+                }
+                $run = 1;
+            }
+        }
+
+        if ($run >= 2) {
+            $clusters++;
+        }
+
+        return $clusters;
+    }
+
+    protected function passesSoftStructureFilters(array $game, array $structureContext, array $profile): bool
+    {
+        $sum = array_sum($game);
+        $oddCount = count(array_filter($game, fn ($n) => $n % 2 !== 0));
+
+        $sumMin = max(145, (int) (($structureContext['sum_min'] ?? 170) - ($profile['sum_tolerance'] ?? 25)));
+        $sumMax = min(235, (int) (($structureContext['sum_max'] ?? 210) + ($profile['sum_tolerance'] ?? 25)));
+        $oddMin = max(4, (int) (($structureContext['odd_min'] ?? 6) - ($profile['odd_tolerance'] ?? 3)));
+        $oddMax = min(11, (int) (($structureContext['odd_max'] ?? 9) + ($profile['odd_tolerance'] ?? 3)));
+
+        if ($sum < $sumMin || $sum > $sumMax) {
+            return false;
+        }
+
+        if ($oddCount < $oddMin || $oddCount > $oddMax) {
+            return false;
+        }
+
+        if ($this->hasLongSequence($game, 9)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    protected function passesRepeatControl(array $game, array $lastDraw, array $profile): bool
+    {
+        if (empty($lastDraw)) {
+            return true;
+        }
+
+        $repeatCount = count(array_intersect($game, $lastDraw));
+
+        return $repeatCount >= max(6, $profile['repeat_min'] - 1)
+            && $repeatCount <= min(13, $profile['repeat_max'] + 1);
+    }
+
+    protected function passesCycleControl(array $game, array $cycleMissing, array $profile): bool
+    {
+        if (empty($cycleMissing)) {
+            return true;
+        }
+
+        $hits = count(array_intersect($game, $cycleMissing));
+
+        return $hits >= max(1, ($profile['cycle_min_hits'] ?? 1));
+    }
+
+    protected function weightedPickFromTopBand(array $weights, int $bandSize): int
     {
         arsort($weights);
 
-        $bandLimit = max(5, min(25, $bandSize));
-        $band = array_slice($weights, 0, $bandLimit, true);
+        $topWeights = array_slice($weights, 0, max(1, $bandSize), true);
 
-        if (mt_rand(1, 100) <= 18) {
-            $band = array_slice($weights, 0, min(25, max($bandLimit + 6, 12)), true);
-        }
-
-        return $this->weightedPick($band);
+        return $this->weightedPick($topWeights);
     }
 
     protected function weightedPick(array $weights): int
@@ -477,7 +573,7 @@ class CandidateGeneratorService
             return (int) array_key_first($weights);
         }
 
-        $random = $this->randomFloat(0, $total);
+        $random = (mt_rand() / mt_getrandmax()) * $total;
 
         foreach ($weights as $number => $weight) {
             $random -= $weight;
@@ -490,8 +586,44 @@ class CandidateGeneratorService
         return (int) array_key_last($weights);
     }
 
-    protected function randomFloat(float $min, float $max): float
+    protected function wouldCreateUsefulSequence(int $number, array $selected): bool
     {
-        return $min + ((mt_rand() / mt_getrandmax()) * ($max - $min));
+        if (empty($selected)) {
+            return false;
+        }
+
+        $numbers = $selected;
+        $numbers[] = $number;
+        sort($numbers);
+
+        $longest = $this->longestSequence($numbers);
+
+        return $longest >= 3 && $longest <= 5;
+    }
+
+    protected function longestSequence(array $game): int
+    {
+        if (empty($game)) {
+            return 0;
+        }
+
+        $current = 1;
+        $longest = 1;
+
+        for ($i = 1; $i < count($game); $i++) {
+            if ($game[$i] === $game[$i - 1] + 1) {
+                $current++;
+                $longest = max($longest, $current);
+            } else {
+                $current = 1;
+            }
+        }
+
+        return $longest;
+    }
+
+    protected function hasLongSequence(array $game, int $maxSequenceLength): bool
+    {
+        return $this->longestSequence($game) >= $maxSequenceLength;
     }
 }
