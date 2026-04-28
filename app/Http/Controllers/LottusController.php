@@ -35,7 +35,6 @@ class LottusController extends Controller
     {
         $contexto = $this->getContextoColeta();
 
-        // Regra: somente 1 jogo por dia
         $apostaHoje = $this->getApostaDeHoje();
         if ($apostaHoje) {
             return redirect()
@@ -44,8 +43,6 @@ class LottusController extends Controller
                 ->with('aposta_id', $apostaHoje->id);
         }
 
-        // Se ainda não chegou a hora de solicitar novo concurso,
-        // gera com o último concurso salvo.
         if (! $contexto['deveSolicitarNovoConcurso']) {
             return $this->gerarApostaComConcurso($contexto['ultimoConcurso']);
         }
@@ -64,7 +61,6 @@ class LottusController extends Controller
     {
         $contexto = $this->getContextoColeta();
 
-        // Regra: somente 1 jogo por dia
         $apostaHoje = $this->getApostaDeHoje();
         if ($apostaHoje) {
             return redirect()
@@ -73,7 +69,6 @@ class LottusController extends Controller
                 ->with('aposta_id', $apostaHoje->id);
         }
 
-        // Se não há concurso pendente, não salva novo concurso
         if (! $contexto['deveSolicitarNovoConcurso']) {
             return $this->gerarApostaComConcurso($contexto['ultimoConcurso']);
         }
@@ -161,7 +156,6 @@ class LottusController extends Controller
         $dataReferencia = now()->timezone(config('app.timezone'))->format('Y-m-d');
 
         $aposta = LotofacilAposta::create([
-            'user_id' => auth()->id(),
             'concurso_base_id' => $concurso->id,
             'data_esperada_sorteio' => $dataReferencia,
             'dezenas' => $resultado['dezenas'],
@@ -230,7 +224,13 @@ class LottusController extends Controller
 
     private function getApostaDeHoje(): ?LotofacilAposta
     {
-        return LotofacilAposta::where('user_id', auth()->id())
+        $apostaId = session('aposta_id');
+
+        if (! $apostaId) {
+            return null;
+        }
+
+        return LotofacilAposta::where('id', $apostaId)
             ->whereDate('created_at', now()->timezone(config('app.timezone'))->format('Y-m-d'))
             ->latest()
             ->first();

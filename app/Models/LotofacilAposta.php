@@ -12,6 +12,7 @@ class LotofacilAposta extends Model
     protected $table = 'lotofacil_apostas';
 
     protected $fillable = [
+        'user_id',
         'email',
         'token_lote',
         'concurso_base_id',

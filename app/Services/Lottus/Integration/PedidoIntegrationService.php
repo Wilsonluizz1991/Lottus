@@ -4,10 +4,16 @@ namespace App\Services\Lottus\Integration;
 
 use App\Models\LotofacilAposta;
 use App\Models\LottusPedido;
+use App\Services\CupomService;
 use Illuminate\Support\Str;
 
 class PedidoIntegrationService
 {
+    public function __construct(
+        private readonly CupomService $cupomService
+    ) {
+    }
+
     public function criarPedidoAPartirDoLote(
         string $tokenLote,
         string $email,
@@ -34,9 +40,37 @@ class PedidoIntegrationService
         $valorFinal = $subtotal;
         $cupomCodigo = null;
         $cupomId = null;
+        $status = 'aguardando_pagamento';
+        $gateway = 'mercado_pago';
+        $paymentStatus = null;
+        $paidAt = null;
 
-        if (!empty($cupom)) {
-            $cupomCodigo = $cupom;
+        if (! empty($cupom)) {
+            $resultadoCupom = $this->cupomService->validarCupom(
+                $cupom,
+                $subtotal,
+                $email
+            );
+
+            if (! $resultadoCupom['valido']) {
+                throw new \Exception($resultadoCupom['mensagem']);
+            }
+
+            $cupomModel = $resultadoCupom['cupom'];
+
+            $cupomId = $cupomModel->id;
+            $cupomCodigo = $cupomModel->codigo;
+            $desconto = $resultadoCupom['desconto'];
+            $valorFinal = $resultadoCupom['valor_final'];
+
+            $this->cupomService->registrarUso($cupomModel);
+
+            if ($valorFinal <= 0) {
+                $status = 'pago';
+                $gateway = 'cupom';
+                $paymentStatus = 'approved';
+                $paidAt = now();
+            }
         }
 
         return LottusPedido::query()->create([
@@ -52,15 +86,17 @@ class PedidoIntegrationService
                 'quantidade_apostas' => $quantidade,
                 'scores' => $apostas->pluck('score')->values()->toArray(),
             ],
-            'status' => 'aguardando_pagamento',
-            'gateway' => 'mercadopago',
+            'status' => $status,
+            'gateway' => $gateway,
             'external_reference' => (string) Str::uuid(),
-            'expires_at' => now()->addMinutes(30),
+            'expires_at' => $valorFinal <= 0 ? null : now()->addMinutes(30),
             'cupom_id' => $cupomId,
             'cupom_codigo' => $cupomCodigo,
             'subtotal' => $subtotal,
             'desconto' => $desconto,
             'valor_original' => $subtotal,
+            'payment_status' => $paymentStatus,
+            'paid_at' => $paidAt,
         ]);
     }
 }
