@@ -22,7 +22,7 @@ class FechamentoReducer
             return [];
         }
 
-        usort($pool, fn ($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
+        usort($pool, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
 
         $pool = $this->prepareNormalizedScore($pool);
 
@@ -43,17 +43,24 @@ class FechamentoReducer
 
         $workingPool = array_slice($pool, 0, $candidateWindow);
 
-        $firstCandidate = $workingPool[0];
-
-        $this->addCandidate(
-            selected: $selected,
-            seen: $seen,
-            candidate: $firstCandidate,
-            coveredOmittedSingles: $coveredOmittedSingles,
-            coveredOmittedPairs: $coveredOmittedPairs,
-            coveredOmittedTriples: $coveredOmittedTriples,
-            omittedFrequency: $omittedFrequency
+        $eliteSeedCount = min(
+            max(4, (int) floor($quantidadeJogos * 0.14)),
+            count($workingPool)
         );
+
+        $eliteSeeds = array_slice($workingPool, 0, $eliteSeedCount);
+
+        foreach ($eliteSeeds as $eliteCandidate) {
+            $this->addCandidate(
+                selected: $selected,
+                seen: $seen,
+                candidate: $eliteCandidate,
+                coveredOmittedSingles: $coveredOmittedSingles,
+                coveredOmittedPairs: $coveredOmittedPairs,
+                coveredOmittedTriples: $coveredOmittedTriples,
+                omittedFrequency: $omittedFrequency
+            );
+        }
 
         while (count($selected) < $quantidadeJogos && count($selected) < count($workingPool)) {
             $bestIndex = null;
@@ -165,7 +172,7 @@ class FechamentoReducer
     protected function prepareNormalizedScore(array $pool): array
     {
         $scores = array_map(
-            fn ($candidate) => (float) ($candidate['score'] ?? 0.0),
+            fn($candidate) => (float) ($candidate['score'] ?? 0.0),
             $pool
         );
 
@@ -201,16 +208,28 @@ class FechamentoReducer
 
         $value = 0.0;
 
-        $value += $score * 100.0;
-        $value += min(20.0, $eliteBonus * 1.25);
+        // score bruto mais forte
+        $value += $score * 135.0;
 
+        // elite mais valorizada
+        $value += min(35.0, $eliteBonus * 2.0);
+
+        // diversidade ainda existe
         $value += $this->newOmittedSinglesValue($omitted, $coveredOmittedSingles);
         $value += $this->newOmittedPairsValue($omitted, $coveredOmittedPairs);
         $value += $this->newOmittedTriplesValue($omitted, $coveredOmittedTriples);
 
+        // equilíbrio leve
         $value += $this->omittedBalanceValue($omitted, $omittedFrequency);
-        $value += $this->omittedDistanceValue($omitted, $selected);
+
+        // distância reduzida
+        $value += $this->omittedDistanceValue($omitted, $selected) * 0.55;
+
+        // penalidade reduzida
         $value -= $this->omittedClonePenalty($omitted, $selected);
+
+        // bônus por preservação forte
+        $value += $this->elitePreservationBonus($candidate, $selected);
 
         return $value;
     }
@@ -360,22 +379,61 @@ class FechamentoReducer
             $selectedOmitted = $selectedGame['omitted_dezenas'] ?? [];
             $overlap = count(array_intersect($omitted, $selectedOmitted));
 
+            // clone absoluto ainda proibido
             if ($overlap === $omittedCount && $omittedCount > 0) {
-                $penalty += 999.0;
+                $penalty += 180.0;
                 continue;
             }
 
-            if ($omittedCount >= 3 && $overlap >= $omittedCount - 1) {
-                $penalty += 18.0;
+            // overlap quase total
+            if ($omittedCount >= 3 && $overlap === 3) {
+                $penalty += 4.5;
                 continue;
             }
 
-            if ($omittedCount >= 2 && $overlap >= $omittedCount - 1) {
-                $penalty += 8.0;
+            // overlap controlado
+            if ($omittedCount >= 3 && $overlap === 2) {
+                $penalty += 1.2;
+                continue;
+            }
+
+            // overlap leve
+            if ($overlap === 1) {
+                $penalty += 0.15;
             }
         }
 
         return $penalty;
+    }
+
+    protected function elitePreservationBonus(array $candidate, array $selected): float
+    {
+        if (empty($selected)) {
+            return 0.0;
+        }
+
+        $bonus = 0.0;
+
+        $candidateScore = (float) ($candidate['normalized_score'] ?? 0.0);
+        $eliteBonus = (float) ($candidate['elite_bonus'] ?? 0.0);
+
+        if ($candidateScore >= 0.88) {
+            $bonus += 12.0;
+        }
+
+        if ($candidateScore >= 0.93) {
+            $bonus += 18.0;
+        }
+
+        if ($eliteBonus >= 4.0) {
+            $bonus += 10.0;
+        }
+
+        if ($eliteBonus >= 7.0) {
+            $bonus += 18.0;
+        }
+
+        return $bonus;
     }
 
     protected function subsets(array $numbers, int $size): array
