@@ -17,12 +17,29 @@ class PublicCupomController extends Controller
     {
         $data = $request->validate([
             'codigo' => ['required', 'string', 'max:50'],
-            'quantidade' => ['required', 'integer', 'min:1', 'max:20'],
+            'quantidade' => ['nullable', 'integer', 'min:1', 'max:20'],
             'email' => ['nullable', 'email'],
+            'produto' => ['nullable', 'string', 'max:50'],
+            'quantidade_dezenas' => ['nullable', 'integer', 'min:16', 'max:20'],
         ]);
 
-        $valorUnitario = (float) env('LOTTUS_GAME_PRICE', 2.00);
-        $subtotal = round($valorUnitario * (int) $data['quantidade'], 2);
+        $produto = $data['produto'] ?? 'selecao';
+
+        if ($produto === 'fechamento') {
+            $quantidadeDezenas = (int) ($data['quantidade_dezenas'] ?? 16);
+            $subtotal = (float) config("lottus_fechamento.prices.{$quantidadeDezenas}", 0);
+
+            if ($subtotal <= 0) {
+                return response()->json([
+                    'valido' => false,
+                    'mensagem' => 'Valor do fechamento não configurado.',
+                ], 422);
+            }
+        } else {
+            $valorUnitario = (float) env('LOTTUS_GAME_PRICE', 2.00);
+            $quantidade = (int) ($data['quantidade'] ?? 1);
+            $subtotal = round($valorUnitario * $quantidade, 2);
+        }
 
         $resultado = $this->cupomService->validarCupom(
             $data['codigo'],

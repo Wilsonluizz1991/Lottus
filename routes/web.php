@@ -10,6 +10,7 @@ use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PublicCupomController;
 use App\Http\Controllers\PublicLottusController;
 use App\Http\Controllers\Lottus\NovoGeracaoJogosController;
+use App\Http\Controllers\Lottus\FechamentoController;
 use App\Http\Middleware\AdminMiddleware;
 use Illuminate\Support\Facades\Route;
 
@@ -53,5 +54,7 @@ Route::get('/pedido/{token}/pagar', [MercadoPagoCheckoutController::class, 'paga
 
 Route::post('/mercado-pago/webhook', [MercadoPagoWebhookController::class, 'handle'])
     ->name('mercado-pago.webhook');
+    
+Route::post('/fechamento/gerar', [FechamentoController::class, 'gerar'])->name('fechamento.gerar');    
 
 require __DIR__.'/auth.php';

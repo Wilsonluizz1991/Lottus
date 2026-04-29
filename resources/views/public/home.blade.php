@@ -22,7 +22,7 @@
         <nav class="lottus-sidebar-nav">
             <a href="#gerar-jogo" class="lottus-sidebar-link active">
                 <span class="lottus-sidebar-link-icon">01</span>
-                <span class="lottus-sidebar-link-text">Selecionar jogo</span>
+                <span class="lottus-sidebar-link-text">Iniciar Seleção</span>
             </a>
 
             @if($ultimoConcurso)
@@ -56,10 +56,10 @@
 
             <section id="gerar-jogo" class="lottus-section-anchor">
                 <div class="card border-0 shadow-lg overflow-hidden mb-4 hero-card">
-                    <div class="card-body p-4 p-md-5">
-                        <div class="row align-items-center g-4">
+                    <div class="card-body p-4 p-md-4">
+                        <div class="row align-items-start g-3">
                             <div class="col-lg-7">
-                                <div class="hero-branding mb-4">
+                                <div class="hero-branding mb-3">
                                     <div class="hero-kicker-wrap mb-3">
                                         <span class="hero-kicker">
                                             Loteria inteligente
@@ -79,7 +79,7 @@
                                     </p>
                                 </div>
 
-                                <div class="d-flex flex-wrap gap-2 mb-4">
+                                <div class="d-flex flex-wrap gap-2 mb-3">
                                     <span class="badge rounded-pill text-bg-light border text-dark px-3 py-2">
                                         Janelas estatísticas adaptativas
                                     </span>
@@ -112,6 +112,12 @@
                                     </div>
                                 @enderror
 
+                                @error('quantidade_dezenas')
+                                    <div class="alert alert-danger border-0 shadow-sm rounded-4">
+                                        {{ $message }}
+                                    </div>
+                                @enderror
+
                                 @error('cupom')
                                     <div class="alert alert-danger border-0 shadow-sm rounded-4">
                                         {{ $message }}
@@ -119,7 +125,7 @@
                                 @enderror
 
                                 @if($ultimoConcurso)
-                                    <div class="alert alert-info border-0 shadow-sm rounded-4 p-4">
+                                    <div class="alert alert-info border-0 shadow-sm rounded-4 p-4 lottus-base-alert">
                                         <div class="fw-semibold mb-2 fs-5">
                                             Base de análise da Lottus
                                         </div>
@@ -146,111 +152,250 @@
                             </div>
 
                             <div class="col-lg-5">
-                                <div class="card border-0 shadow-lg form-card">
+                                <div class="card border-0 shadow-lg form-card lottus-generator-card">
                                     <div class="card-body p-4">
-                                        <h2 class="h4 fw-bold mb-3">Selecionar jogo</h2>
-                                        <p class="text-muted mb-3">
-                                            Informe seu e-mail, escolha a quantidade de jogos e selecione combinações para liberação após a confirmação do pagamento.
-                                        </p>
+                                        <div class="lottus-product-tabs">
+                                            <button
+                                                type="button"
+                                                class="lottus-tab-btn active"
+                                                data-target="simple-game-panel"
+                                            >
+                                                Seleção Inteligente
+                                            </button>
 
-                                        <form method="POST" action="{{ route('jogos.gerar') }}" id="form-gerar-jogo">
-                                            @csrf
+                                            <button
+                                                type="button"
+                                                class="lottus-tab-btn"
+                                                data-target="fechamento-panel"
+                                            >
+                                                Fechamento Inteligente
+                                            </button>
+                                        </div>
 
-                                            <div class="mb-3">
-                                                <label class="form-label fw-semibold">Seu e-mail</label>
-                                                <input
-                                                    type="email"
-                                                    name="email"
-                                                    id="email"
-                                                    class="form-control form-control-lg rounded-4"
-                                                    value="{{ old('email') }}"
-                                                    placeholder="voce@exemplo.com"
-                                                    required
-                                                >
-                                            </div>
+                                        <div id="simple-game-panel" class="lottus-tab-panel active">
+                                            <h2 class="h4 fw-bold mb-2">Seleção Inteligente Lottus</h2>
+                                            <p class="text-muted mb-3">
+                                                Informe seu e-mail, escolha a quantidade de jogos e selecione combinações para liberação após a confirmação do pagamento.
+                                            </p>
 
-                                            <div class="mb-3">
-                                                <label class="form-label fw-semibold">Quantidade de jogos</label>
-                                                <select name="quantidade" id="quantidade" class="form-select form-select-lg rounded-4" required>
-                                                    @for($i = 1; $i <= 10; $i++)
-                                                        <option value="{{ $i }}" {{ old('quantidade', 1) == $i ? 'selected' : '' }}>
-                                                            {{ $i }} {{ $i === 1 ? 'jogo' : 'jogos' }}
-                                                        </option>
-                                                    @endfor
-                                                </select>
-                                            </div>
+                                            <form method="POST" action="{{ route('jogos.gerar') }}" id="form-gerar-jogo">
+                                                @csrf
 
-                                            <div class="mb-3">
-                                                <label for="cupom" class="form-label fw-semibold">Cupom de desconto</label>
-
-                                                <div class="cupom-layout">
-                                                    <div class="cupom-input-wrap">
-                                                        <input
-                                                            type="text"
-                                                            class="form-control form-control-lg rounded-4 cupom-input"
-                                                            id="cupom"
-                                                            placeholder="Digite seu cupom"
-                                                            value="{{ old('cupom') }}"
-                                                            autocomplete="off"
-                                                        >
-                                                    </div>
-
-                                                    <div class="cupom-button-wrap">
-                                                        <button
-                                                            type="button"
-                                                            class="btn btn-outline-primary rounded-4 w-100 btn-cupom-aplicar"
-                                                            id="btn-validar-cupom"
-                                                        >
-                                                            Aplicar
-                                                        </button>
-                                                    </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label fw-semibold">Seu e-mail</label>
+                                                    <input
+                                                        type="email"
+                                                        name="email"
+                                                        id="email"
+                                                        class="form-control form-control-lg rounded-4"
+                                                        value="{{ old('email') }}"
+                                                        placeholder="voce@exemplo.com"
+                                                        required
+                                                    >
                                                 </div>
 
-                                                <input type="hidden" id="cupom-aplicado" name="cupom" value="{{ old('cupom') }}">
-
-                                                <div id="cupom-feedback" class="mt-2"></div>
-                                            </div>
-
-                                            <div class="border rounded-4 bg-white p-3 mb-3 resumo-preco">
-                                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                                    <span class="small text-muted">Valor por jogo</span>
-                                                    <div class="fw-semibold">R$ {{ $preco }}</div>
+                                                <div class="mb-3">
+                                                    <label class="form-label fw-semibold">Quantidade de jogos</label>
+                                                    <select name="quantidade" id="quantidade" class="form-select form-select-lg rounded-4" required>
+                                                        @for($i = 1; $i <= 10; $i++)
+                                                            <option value="{{ $i }}" {{ old('quantidade', 1) == $i ? 'selected' : '' }}>
+                                                                {{ $i }} {{ $i === 1 ? 'jogo' : 'jogos' }}
+                                                            </option>
+                                                        @endfor
+                                                    </select>
                                                 </div>
 
-                                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                                    <span class="small text-muted">Subtotal</span>
-                                                    <div class="fw-semibold" id="subtotal-preview">
+                                                <div class="mb-3">
+                                                    <label for="cupom" class="form-label fw-semibold">Cupom de desconto</label>
+
+                                                    <div class="cupom-layout">
+                                                        <div class="cupom-input-wrap">
+                                                            <input
+                                                                type="text"
+                                                                class="form-control form-control-lg rounded-4 cupom-input"
+                                                                id="cupom"
+                                                                placeholder="Digite seu cupom"
+                                                                value="{{ old('cupom') }}"
+                                                                autocomplete="off"
+                                                            >
+                                                        </div>
+
+                                                        <div class="cupom-button-wrap">
+                                                            <button
+                                                                type="button"
+                                                                class="btn btn-outline-primary rounded-4 w-100 btn-cupom-aplicar"
+                                                                id="btn-validar-cupom"
+                                                            >
+                                                                Aplicar
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    <input type="hidden" id="cupom-aplicado" name="cupom" value="{{ old('cupom') }}">
+
+                                                    <div id="cupom-feedback" class="mt-2"></div>
+                                                </div>
+
+                                                <div class="border rounded-4 bg-white p-3 mb-3 resumo-preco">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="small text-muted">Valor por jogo</span>
+                                                        <div class="fw-semibold">R$ {{ $preco }}</div>
+                                                    </div>
+
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="small text-muted">Subtotal</span>
+                                                        <div class="fw-semibold" id="subtotal-preview">
+                                                            R$ {{ number_format($valorUnitario, 2, ',', '.') }}
+                                                        </div>
+                                                    </div>
+
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="small text-muted">Desconto</span>
+                                                        <div class="fw-semibold text-success" id="desconto-preview">
+                                                            R$ 0,00
+                                                        </div>
+                                                    </div>
+
+                                                    <hr class="my-3">
+
+                                                    <div class="small text-muted mb-1">Valor total</div>
+                                                    <div class="fs-3 fw-bold text-primary" id="valor-total">
                                                         R$ {{ number_format($valorUnitario, 2, ',', '.') }}
                                                     </div>
                                                 </div>
 
-                                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                                    <span class="small text-muted">Desconto</span>
-                                                    <div class="fw-semibold text-success" id="desconto-preview">
-                                                        R$ 0,00
+                                                <button
+                                                    class="btn btn-primary btn-lg w-100 py-3 fw-semibold shadow-sm rounded-4"
+                                                    type="submit"
+                                                    id="btn-gerar-jogo"
+                                                >
+                                                    Selecionar jogo agora
+                                                </button>
+                                            </form>
+
+                                            <p class="small text-muted mt-3 mb-0">
+                                                A Lottus seleciona jogos por análise estatística. Após receber suas combinações, registre sua aposta no site oficial da Caixa ou no app oficial.
+                                            </p>
+                                        </div>
+
+                                        <div id="fechamento-panel" class="lottus-tab-panel">
+                                            <h2 class="h4 fw-bold mb-2">Fechamento Inteligente Lottus</h2>
+                                            <p class="text-muted mb-3">
+                                               Escolha o tamanho do fechamento. A Lottus analisa padrões estatísticos e seleciona automaticamente as dezenas com maior potencial, criando jogos otimizados com inteligência estratégica.
+                                            </p>
+
+                                            <form method="POST" action="{{ route('fechamento.gerar') }}" id="form-gerar-fechamento">
+                                                @csrf
+
+                                                <div class="mb-3">
+                                                    <label class="form-label fw-semibold">Seu e-mail</label>
+                                                    <input
+                                                        type="email"
+                                                        name="email"
+                                                        id="email-fechamento"
+                                                        class="form-control form-control-lg rounded-4"
+                                                        value="{{ old('email') }}"
+                                                        placeholder="voce@exemplo.com"
+                                                        required
+                                                    >
+                                                </div>
+
+                                                <div class="mb-3">
+                                                    <label class="form-label fw-semibold">Tamanho do fechamento</label>
+
+                                                    <select
+                                                        name="quantidade_dezenas"
+                                                        id="quantidade-dezenas-fechamento"
+                                                        class="form-select form-select-lg rounded-4"
+                                                        required
+                                                    >
+                                                        <option value="16" data-price="7.90" data-games="16">16 dezenas — R$ 7,90</option>
+                                                        <option value="17" data-price="11.90" data-games="24">17 dezenas — R$ 11,90</option>
+                                                        <option value="18" data-price="17.90" data-games="36">18 dezenas — R$ 17,90</option>
+                                                        <option value="19" data-price="27.90" data-games="60">19 dezenas — R$ 27,90</option>
+                                                        <option value="20" data-price="39.90" data-games="90">20 dezenas — R$ 39,90</option>
+                                                    </select>
+                                                </div>
+
+
+                                                <div class="mb-3">
+                                                    <label for="cupom-fechamento" class="form-label fw-semibold">Cupom de desconto</label>
+
+                                                    <div class="cupom-layout">
+                                                        <div class="cupom-input-wrap">
+                                                            <input
+                                                                type="text"
+                                                                class="form-control form-control-lg rounded-4 cupom-input"
+                                                                id="cupom-fechamento"
+                                                                placeholder="Digite seu cupom"
+                                                                value="{{ old('cupom') }}"
+                                                                autocomplete="off"
+                                                            >
+                                                        </div>
+
+                                                        <div class="cupom-button-wrap">
+                                                            <button
+                                                                type="button"
+                                                                class="btn btn-outline-primary rounded-4 w-100 btn-cupom-aplicar"
+                                                                id="btn-validar-cupom-fechamento"
+                                                            >
+                                                                Aplicar
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    <input type="hidden" id="cupom-aplicado-fechamento" name="cupom" value="{{ old('cupom') }}">
+
+                                                    <div id="cupom-feedback-fechamento" class="mt-2"></div>
+                                                </div>
+
+                                                <div class="border rounded-4 bg-white p-3 mb-3 resumo-preco fechamento-resumo">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="small text-muted">Produto</span>
+                                                        <div class="fw-semibold">Fechamento Inteligente</div>
+                                                    </div>
+
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="small text-muted">Dezenas analisadas</span>
+                                                        <div class="fw-semibold" id="fechamento-dezenas-preview">16 dezenas</div>
+                                                    </div>
+
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="small text-muted">Jogos entregues</span>
+                                                        <div class="fw-semibold" id="fechamento-jogos-preview">16 jogos</div>
+                                                    </div>
+
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="small text-muted">Subtotal</span>
+                                                        <div class="fw-semibold" id="fechamento-subtotal-preview">R$ 7,90</div>
+                                                    </div>
+
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="small text-muted">Desconto</span>
+                                                        <div class="fw-semibold text-success" id="fechamento-desconto-preview">R$ 0,00</div>
+                                                    </div>
+
+                                                    <hr class="my-3">
+
+                                                    <div class="small text-muted mb-1">Valor total</div>
+                                                    <div class="fs-3 fw-bold text-primary" id="fechamento-valor-total">
+                                                        R$ 7,90
                                                     </div>
                                                 </div>
 
-                                                <hr class="my-3">
+                                                <button
+                                                    class="btn btn-primary btn-lg w-100 py-3 fw-semibold shadow-sm rounded-4"
+                                                    type="submit"
+                                                    id="btn-gerar-fechamento"
+                                                >
+                                                    Selecionar fechamento inteligente
+                                                </button>
+                                            </form>
 
-                                                <div class="small text-muted mb-1">Valor total</div>
-                                                <div class="fs-3 fw-bold text-primary" id="valor-total">
-                                                    R$ {{ number_format($valorUnitario, 2, ',', '.') }}
-                                                </div>
-                                            </div>
-
-                                            <button
-                                                class="btn btn-primary btn-lg w-100 py-3 fw-semibold shadow-sm rounded-4"
-                                                type="submit"
-                                                id="btn-gerar-jogo"
-                                            >
-                                                Selecionar jogo agora
-                                            </button>
-                                        </form>
-
-                                        <p class="small text-muted mt-3 mb-0">
-                                            A Lottus seleciona jogos por análise estatística. Após receber suas combinações, registre sua aposta no site oficial da Caixa ou no app oficial.
-                                        </p>
+                                            <p class="small text-muted mt-3 mb-0">
+                                                O Fechamento Inteligente Lottus é um produto premium. A Lottus seleciona as dezenas e monta jogos reduzidos com base em análise estatística e cobertura matemática.
+                                            </p>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -787,10 +932,85 @@
         padding: 0.75rem 1rem;
     }
 
+    .hero-card > .card-body {
+        padding-top: 2rem !important;
+        padding-bottom: 2rem !important;
+    }
+
+    .lottus-generator-card {
+        margin-top: 0;
+    }
+
+    .lottus-base-alert {
+        margin-top: 1rem;
+    }
+
+    .lottus-tab-panel {
+        display: none !important;
+    }
+
+    .lottus-tab-panel.active {
+        display: block !important;
+    }
+
+    .lottus-product-tabs {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        background: linear-gradient(180deg, #f8fbff 0%, #eef5ff 100%);
+        padding: 0.32rem;
+        border-radius: 16px;
+        border: 1px solid #dbe7fb;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
+        margin-bottom: 1.15rem !important;
+    }
+
+    .lottus-tab-btn {
+        flex: 1;
+        border: 0;
+        background: transparent;
+        border-radius: 13px;
+        padding: 0.55rem 0.65rem;
+        min-height: 42px;
+        font-weight: 700;
+        font-size: 0.82rem;
+        line-height: 1.2;
+        color: #667085;
+        transition: all .22s ease;
+        cursor: pointer;
+        outline: none;
+    }
+
+    .lottus-tab-btn:hover {
+        background: rgba(255,255,255,0.75);
+        color: #22314a;
+    }
+
+    .lottus-tab-btn.active {
+        background: linear-gradient(135deg, #0d6efd 0%, #3d8bfd 45%, #6ea8fe 100%);
+        color: #ffffff;
+        box-shadow: 0 10px 20px rgba(13,110,253,0.16), inset 0 1px 0 rgba(255,255,255,0.15);
+    }
+
+    .lottus-tab-btn.active:hover {
+        color: #ffffff;
+    }
+
     @media (min-width: 768px) {
         .cupom-layout {
             grid-template-columns: minmax(0, 1fr) 140px;
             gap: 0.75rem;
+        }
+    }
+
+    @media (max-width: 767.98px) {
+        .lottus-product-tabs {
+            gap: 0.3rem;
+        }
+
+        .lottus-tab-btn {
+            font-size: 0.78rem;
+            padding: 0.5rem 0.45rem;
         }
     }
 </style>
@@ -798,6 +1018,7 @@
 <script>
     document.addEventListener('DOMContentLoaded', function () {
         const form = document.getElementById('form-gerar-jogo');
+        const formFechamento = document.getElementById('form-gerar-fechamento');
         const quantidade = document.getElementById('quantidade');
         const emailInput = document.getElementById('email');
         const valorTotal = document.getElementById('valor-total');
@@ -805,6 +1026,7 @@
         const descontoPreview = document.getElementById('desconto-preview');
         const valorUnitario = {{ json_encode((float) $valorUnitario) }};
         const botaoGerar = document.getElementById('btn-gerar-jogo');
+        const botaoGerarFechamento = document.getElementById('btn-gerar-fechamento');
         const overlay = document.getElementById('gerando-overlay');
         const tituloLoading = document.getElementById('gerando-titulo');
         const textoLoading = document.getElementById('gerando-texto');
@@ -817,6 +1039,18 @@
         const cupomAplicadoInput = document.getElementById('cupom-aplicado');
         const btnValidarCupom = document.getElementById('btn-validar-cupom');
         const feedbackCupom = document.getElementById('cupom-feedback');
+        const tabButtons = document.querySelectorAll('.lottus-tab-btn');
+        const tabPanels = document.querySelectorAll('.lottus-tab-panel');
+        const quantidadeFechamento = document.getElementById('quantidade-dezenas-fechamento');
+        const fechamentoDezenasPreview = document.getElementById('fechamento-dezenas-preview');
+        const fechamentoJogosPreview = document.getElementById('fechamento-jogos-preview');
+        const fechamentoValorTotal = document.getElementById('fechamento-valor-total');
+        const cupomFechamentoInput = document.getElementById('cupom-fechamento');
+        const cupomAplicadoFechamentoInput = document.getElementById('cupom-aplicado-fechamento');
+        const btnValidarCupomFechamento = document.getElementById('btn-validar-cupom-fechamento');
+        const feedbackCupomFechamento = document.getElementById('cupom-feedback-fechamento');
+        const fechamentoDescontoPreview = document.getElementById('fechamento-desconto-preview');
+        const fechamentoSubtotalPreview = document.getElementById('fechamento-subtotal-preview');
 
         function formatarBRL(valor) {
             return 'R$ ' + Number(valor).toLocaleString('pt-BR', {
@@ -842,15 +1076,61 @@
             valorTotal.textContent = formatarBRL(subtotal);
         }
 
+        function obterFechamentoSelecionado() {
+            if (!quantidadeFechamento) {
+                return {
+                    dezenas: 16,
+                    jogos: 16,
+                    valor: 7.90
+                };
+            }
+
+            const selectedOption = quantidadeFechamento.options[quantidadeFechamento.selectedIndex];
+
+            if (!selectedOption) {
+                return {
+                    dezenas: 16,
+                    jogos: 16,
+                    valor: 7.90
+                };
+            }
+
+            return {
+                dezenas: parseInt(selectedOption.value || 16, 10),
+                jogos: parseInt(selectedOption.dataset.games || 16, 10),
+                valor: parseFloat(selectedOption.dataset.price || 0)
+            };
+        }
+
+        function atualizarResumoFechamentoSemCupom() {
+            const fechamento = obterFechamentoSelecionado();
+
+            fechamentoDezenasPreview.textContent = `${fechamento.dezenas} dezenas`;
+            fechamentoJogosPreview.textContent = fechamento.jogos === 1 ? '1 jogo' : `${fechamento.jogos} jogos`;
+            fechamentoSubtotalPreview.textContent = formatarBRL(fechamento.valor);
+            fechamentoDescontoPreview.textContent = formatarBRL(0);
+            fechamentoValorTotal.textContent = formatarBRL(fechamento.valor);
+        }
+
         function limparCupomAplicado() {
             cupomAplicadoInput.value = '';
             feedbackCupom.innerHTML = '';
             atualizarResumoSemCupom();
         }
 
+        function limparCupomFechamentoAplicado() {
+            cupomAplicadoFechamentoInput.value = '';
+            feedbackCupomFechamento.innerHTML = '';
+            atualizarResumoFechamentoSemCupom();
+        }
+
         function atualizarTextoBotao() {
             const qtd = obterQuantidadeSelecionada();
             botaoGerar.textContent = qtd > 1 ? 'Selecionar jogos agora' : 'Selecionar jogo agora';
+        }
+
+        function atualizarResumoFechamento() {
+            atualizarResumoFechamentoSemCupom();
         }
 
         function exibirLoading() {
@@ -872,6 +1152,18 @@
             botaoGerar.textContent = qtd > 1 ? 'Selecionando jogos...' : 'Selecionando jogo...';
         }
 
+        function exibirLoadingFechamento() {
+            tituloLoading.textContent = 'Selecionando seu fechamento...';
+            textoLoading.textContent = 'Aguarde enquanto a Lottus prepara seu fechamento inteligente.';
+
+            overlay.classList.add('ativo');
+            overlay.setAttribute('aria-hidden', 'false');
+
+            botaoGerarFechamento.disabled = true;
+            botaoGerarFechamento.classList.add('btn-loading');
+            botaoGerarFechamento.textContent = 'Selecionando fechamento...';
+        }
+
         function abrirSidebarMobile() {
             sidebar.classList.add('mobile-open');
             sidebarBackdrop.classList.add('ativo');
@@ -887,6 +1179,16 @@
         function ativarLink(hash) {
             sidebarLinks.forEach(function (link) {
                 link.classList.toggle('active', link.getAttribute('href') === hash);
+            });
+        }
+
+        function activateTab(targetId) {
+            tabButtons.forEach(function (button) {
+                button.classList.toggle('active', button.dataset.target === targetId);
+            });
+
+            tabPanels.forEach(function (panel) {
+                panel.classList.toggle('active', panel.id === targetId);
             });
         }
 
@@ -946,6 +1248,95 @@
             }
         }
 
+
+        async function validarCupomFechamento() {
+            const codigo = (cupomFechamentoInput?.value || '').trim();
+            const email = (document.getElementById('email-fechamento')?.value || '').trim();
+            const fechamento = obterFechamentoSelecionado();
+
+            if (!codigo) {
+                feedbackCupomFechamento.innerHTML = '<div class="alert alert-warning border-0 shadow-sm rounded-4 mt-2 mb-0">Digite um cupom para validar.</div>';
+                cupomAplicadoFechamentoInput.value = '';
+                atualizarResumoFechamentoSemCupom();
+                return;
+            }
+
+            btnValidarCupomFechamento.disabled = true;
+            btnValidarCupomFechamento.textContent = 'Validando...';
+
+            try {
+                const response = await fetch(@json(route('cupom.validar')), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': @json(csrf_token()),
+                    },
+                    body: JSON.stringify({
+                        codigo,
+                        email: email,
+                        produto: 'fechamento',
+                        tipo: 'fechamento',
+                        quantidade: 1,
+                        quantidade_dezenas: fechamento.dezenas,
+                        jogos_entregues: fechamento.jogos,
+                        subtotal: fechamento.valor,
+                        valor_original: fechamento.valor
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    feedbackCupomFechamento.innerHTML = `<div class="alert alert-danger border-0 shadow-sm rounded-4 mt-2 mb-0">${data.mensagem || 'Não foi possível aplicar o cupom.'}</div>`;
+                    cupomAplicadoFechamentoInput.value = '';
+                    atualizarResumoFechamentoSemCupom();
+                    return;
+                }
+
+                const subtotal = Number(data.subtotal ?? fechamento.valor);
+                const desconto = Number(data.desconto ?? 0);
+                const valorFinal = Number(data.valor_final ?? Math.max(subtotal - desconto, 0));
+
+                fechamentoSubtotalPreview.textContent = formatarBRL(subtotal);
+                fechamentoDescontoPreview.textContent = '- ' + formatarBRL(desconto);
+                fechamentoValorTotal.textContent = formatarBRL(valorFinal);
+                cupomAplicadoFechamentoInput.value = data.codigo || codigo;
+
+                feedbackCupomFechamento.innerHTML = `<div class="alert alert-success border-0 shadow-sm rounded-4 mt-2 mb-0"><strong>${data.descricao || 'Cupom'}</strong> aplicado com sucesso.</div>`;
+            } catch (error) {
+                feedbackCupomFechamento.innerHTML = '<div class="alert alert-danger border-0 shadow-sm rounded-4 mt-2 mb-0">Erro ao validar o cupom. Tente novamente.</div>';
+                cupomAplicadoFechamentoInput.value = '';
+                atualizarResumoFechamentoSemCupom();
+            } finally {
+                btnValidarCupomFechamento.disabled = false;
+                btnValidarCupomFechamento.textContent = 'Aplicar';
+            }
+        }
+
+        if (tabButtons.length) {
+            tabButtons.forEach(function (button) {
+                button.addEventListener('click', function () {
+                    activateTab(button.dataset.target);
+                });
+            });
+
+            activateTab('simple-game-panel');
+        }
+
+        if (quantidadeFechamento) {
+            quantidadeFechamento.addEventListener('change', function () {
+                atualizarResumoFechamento();
+
+                if (cupomAplicadoFechamentoInput.value) {
+                    validarCupomFechamento();
+                }
+            });
+
+            atualizarResumoFechamento();
+        }
+
         if (quantidade && valorTotal) {
             quantidade.addEventListener('change', function () {
                 atualizarResumoSemCupom();
@@ -976,6 +1367,30 @@
             });
         }
 
+        if (cupomFechamentoInput) {
+            cupomFechamentoInput.addEventListener('input', function () {
+                if (!cupomFechamentoInput.value.trim()) {
+                    limparCupomFechamentoAplicado();
+                }
+            });
+        }
+
+        if (btnValidarCupomFechamento) {
+            btnValidarCupomFechamento.addEventListener('click', function () {
+                validarCupomFechamento();
+            });
+        }
+
+        const emailFechamentoInput = document.getElementById('email-fechamento');
+
+        if (emailFechamentoInput) {
+            emailFechamentoInput.addEventListener('change', function () {
+                if (cupomAplicadoFechamentoInput.value) {
+                    validarCupomFechamento();
+                }
+            });
+        }
+
         if (btnValidarCupom) {
             btnValidarCupom.addEventListener('click', function () {
                 validarCupom();
@@ -985,6 +1400,12 @@
         if (form) {
             form.addEventListener('submit', function () {
                 exibirLoading();
+            });
+        }
+
+        if (formFechamento) {
+            formFechamento.addEventListener('submit', function () {
+                exibirLoadingFechamento();
             });
         }
 
@@ -1044,6 +1465,10 @@
 
         if (cupomAplicadoInput.value) {
             validarCupom();
+        }
+
+        if (cupomAplicadoFechamentoInput.value) {
+            validarCupomFechamento();
         }
     });
 </script>

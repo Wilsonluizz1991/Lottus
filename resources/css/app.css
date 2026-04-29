@@ -285,6 +285,81 @@ body.lottus-sidebar-open {
     box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
 }
 
+.lottus-product-tabs {
+    display: flex;
+    gap: 0.65rem;
+    background: #f5f8fd;
+    padding: 0.45rem;
+    border-radius: 18px;
+    border: 1px solid #e3ebf6;
+}
+
+.lottus-tab-btn {
+    flex: 1;
+    border: 0;
+    background: transparent;
+    border-radius: 14px;
+    padding: 0.9rem 1rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: #5f6f86;
+    transition: all .25s ease;
+}
+
+.lottus-tab-btn:hover {
+    background: rgba(255,255,255,0.7);
+}
+
+.lottus-tab-btn.active {
+    background: linear-gradient(135deg, #0d6efd 0%, #3d8bfd 45%, #6ea8fe 100%);
+    color: #ffffff;
+    box-shadow: 0 12px 24px rgba(13,110,253,0.18);
+}
+
+.lottus-tab-panel {
+    display: none;
+    animation: fadeTab .28s ease;
+}
+
+.lottus-tab-panel.active {
+    display: block;
+}
+
+.fechamento-highlight-box {
+    border-radius: 22px;
+    padding: 1.25rem;
+    background: linear-gradient(180deg, #f7fbff 0%, #eef5ff 100%);
+    border: 1px solid #dbe8ff;
+}
+
+.fechamento-highlight-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #1b2434;
+    margin-bottom: .5rem;
+}
+
+.fechamento-highlight-text {
+    color: #667085;
+    line-height: 1.7;
+}
+
+.fechamento-resumo {
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%) !important;
+}
+
+@keyframes fadeTab {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
 .resultado-card {
     border-radius: 28px;
 }
@@ -789,6 +864,10 @@ body.lottus-sidebar-open {
     .hero-description {
         font-size: 1rem;
         line-height: 1.7;
+    }
+
+    .lottus-product-tabs {
+        flex-direction: column;
     }
 
     .resultado-topo,

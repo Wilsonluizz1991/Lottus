@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\LotofacilConcurso;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -11,16 +12,31 @@ class CaixaLotofacilService
 
     public function buscarUltimoResultado(): array
     {
+        $ultimoConcursoBanco = LotofacilConcurso::orderByDesc('concurso')->value('concurso');
+
+        $proximoConcurso = $ultimoConcursoBanco
+            ? ((int) $ultimoConcursoBanco + 1)
+            : null;
+
         $response = Http::timeout(20)
             ->withOptions([
                 'verify' => app()->environment('local') ? false : true,
             ])
+            ->withHeaders([
+                'Accept' => 'application/json',
+                'Cache-Control' => 'no-cache, no-store, must-revalidate',
+                'Pragma' => 'no-cache',
+                'Expires' => '0',
+            ])
             ->acceptJson()
-            ->get($this->url);
+            ->get($this->url, array_filter([
+                'concurso' => $proximoConcurso,
+                '_nocache' => now()->timestamp,
+            ]));
 
         if (! $response->successful()) {
             throw new RuntimeException(
-                'Erro no proxy da Caixa | Status: ' . $response->status()
+                "Concurso {$proximoConcurso} ainda não disponível no proxy da Caixa | Status: " . $response->status()
             );
         }
 

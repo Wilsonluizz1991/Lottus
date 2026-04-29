@@ -107,6 +107,11 @@ class SincronizarLotofacilCaixa extends Command
             $this->info("Concurso {$numeroConcurso} salvo com sucesso.");
             return self::SUCCESS;
         } catch (\Throwable $e) {
+            if (str_contains($e->getMessage(), 'ainda não disponível')) {
+                $this->info($e->getMessage());
+                return self::SUCCESS;
+            }
+
             $this->error('Erro ao sincronizar Lotofácil: ' . $e->getMessage());
             return self::FAILURE;
         }
