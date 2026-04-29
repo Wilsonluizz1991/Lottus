@@ -12,9 +12,13 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->preventRequestForgery(except: [
-        'mercado-pago/webhook',
-]);
+            'mercado-pago/webhook',
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //
-    })->create();
+    })
+    ->withCommands([
+        \App\Console\Commands\LottusBacktestFechamentoCommand::class,
+    ])
+    ->create();

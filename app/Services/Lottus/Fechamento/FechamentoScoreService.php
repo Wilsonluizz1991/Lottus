@@ -63,12 +63,40 @@ class FechamentoScoreService
                 clusterStrength: $clusterStrength
             );
 
+            $survivalQuality = $this->survivalQuality(
+                frequencyQuality: $frequencyQuality,
+                delayQuality: $delayQuality,
+                cycleQuality: $cycleQuality,
+                correlationQuality: $correlationQuality,
+                repeatCount: $repeatCount,
+                cycleHits: $cycleHits,
+                sum: $sum,
+                oddCount: $oddCount,
+                longestSequence: $longestSequence,
+                lineDistribution: $lineDistribution,
+                quadrantDistribution: $quadrantDistribution,
+                frameCount: $frameCount,
+                clusterStrength: $clusterStrength
+            );
+
+            $aestheticPenalty = $this->aestheticPenalty(
+                structureQuality: $structureQuality,
+                sum: $sum,
+                oddCount: $oddCount,
+                repeatCount: $repeatCount,
+                longestSequence: $longestSequence,
+                clusterStrength: $clusterStrength,
+                lineDistribution: $lineDistribution,
+                quadrantDistribution: $quadrantDistribution
+            );
+
             $baseScore =
-                ($frequencyQuality * 8.4) +
-                ($delayQuality * 7.2) +
-                ($cycleQuality * 7.8) +
-                ($correlationQuality * 10.5) +
-                ($structureQuality * 5.5);
+                ($frequencyQuality * 9.6) +
+                ($delayQuality * 8.8) +
+                ($cycleQuality * 9.4) +
+                ($correlationQuality * 9.8) +
+                ($structureQuality * 2.2) +
+                ($survivalQuality * 13.5);
 
             $eliteBonus = $this->eliteBonus(
                 frequencyQuality: $frequencyQuality,
@@ -76,6 +104,7 @@ class FechamentoScoreService
                 cycleQuality: $cycleQuality,
                 correlationQuality: $correlationQuality,
                 structureQuality: $structureQuality,
+                survivalQuality: $survivalQuality,
                 repeatCount: $repeatCount,
                 cycleHits: $cycleHits,
                 sum: $sum,
@@ -84,18 +113,20 @@ class FechamentoScoreService
                 clusterStrength: $clusterStrength
             );
 
-            $score = $baseScore + $eliteBonus;
+            $score = $baseScore + $eliteBonus - $aestheticPenalty;
 
             $scored[] = [
                 'dezenas' => $game,
                 'score' => round($score, 6),
                 'base_score' => round($baseScore, 6),
                 'elite_bonus' => round($eliteBonus, 6),
+                'aesthetic_penalty' => round($aestheticPenalty, 6),
                 'frequency_quality' => round($frequencyQuality, 6),
                 'delay_quality' => round($delayQuality, 6),
                 'cycle_quality' => round($cycleQuality, 6),
                 'correlation_quality' => round($correlationQuality, 6),
                 'structure_quality' => round($structureQuality, 6),
+                'survival_quality' => round($survivalQuality, 6),
                 'pares' => $evenCount,
                 'impares' => $oddCount,
                 'soma' => $sum,
@@ -202,19 +233,19 @@ class FechamentoScoreService
         $maxSequence = (int) ($soft['max_sequence'] ?? 7);
 
         if ($sum >= $sumMin && $sum <= $sumMax) {
-            $quality += 0.18;
-        } elseif ($sum >= ($sumMin - 10) && $sum <= ($sumMax + 10)) {
-            $quality += 0.10;
-        }
-
-        if ($oddCount >= $oddMin && $oddCount <= $oddMax) {
-            $quality += 0.15;
-        } elseif ($oddCount >= 5 && $oddCount <= 10) {
+            $quality += 0.12;
+        } elseif ($sum >= ($sumMin - 14) && $sum <= ($sumMax + 14)) {
             $quality += 0.08;
         }
 
+        if ($oddCount >= $oddMin && $oddCount <= $oddMax) {
+            $quality += 0.11;
+        } elseif ($oddCount >= 5 && $oddCount <= 10) {
+            $quality += 0.07;
+        }
+
         if ($repeatCount >= $repeatMin && $repeatCount <= $repeatMax) {
-            $quality += 0.16;
+            $quality += 0.12;
         } elseif ($repeatCount >= 6 && $repeatCount <= 13) {
             $quality += 0.08;
         }
@@ -224,7 +255,7 @@ class FechamentoScoreService
         }
 
         if ($longestSequence >= 3 && $longestSequence <= $maxSequence) {
-            $quality += 0.12;
+            $quality += 0.09;
         } elseif ($longestSequence <= 8) {
             $quality += 0.06;
         }
@@ -233,7 +264,7 @@ class FechamentoScoreService
         $minLine = min($lineDistribution);
 
         if ($maxLine <= 4 && $minLine >= 2) {
-            $quality += 0.10;
+            $quality += 0.08;
         } elseif ($maxLine <= 5 && $minLine >= 1) {
             $quality += 0.06;
         }
@@ -242,22 +273,137 @@ class FechamentoScoreService
         $minQuadrant = min($quadrantDistribution);
 
         if ($maxQuadrant <= 5 && $minQuadrant >= 2) {
-            $quality += 0.08;
+            $quality += 0.07;
         } elseif ($maxQuadrant <= 6 && $minQuadrant >= 1) {
+            $quality += 0.05;
+        }
+
+        if ($frameCount >= 8 && $frameCount <= 12) {
+            $quality += 0.06;
+        } elseif ($frameCount >= 7 && $frameCount <= 13) {
             $quality += 0.04;
         }
 
-        if ($frameCount >= 8 && $frameCount <= 11) {
-            $quality += 0.07;
-        } elseif ($frameCount === 7 || $frameCount === 12) {
+        if ($clusterStrength >= 8) {
             $quality += 0.03;
         }
 
-        if ($clusterStrength >= 8) {
+        return min(1.0, $quality);
+    }
+
+    protected function survivalQuality(
+        float $frequencyQuality,
+        float $delayQuality,
+        float $cycleQuality,
+        float $correlationQuality,
+        int $repeatCount,
+        int $cycleHits,
+        int $sum,
+        int $oddCount,
+        int $longestSequence,
+        array $lineDistribution,
+        array $quadrantDistribution,
+        int $frameCount,
+        float $clusterStrength
+    ): float {
+        $quality = 0.0;
+
+        if ($frequencyQuality >= 0.52) {
+            $quality += 0.13;
+        }
+
+        if ($delayQuality >= 0.48) {
+            $quality += 0.12;
+        }
+
+        if ($cycleQuality >= 0.50) {
+            $quality += 0.13;
+        }
+
+        if ($correlationQuality >= 0.66) {
+            $quality += 0.11;
+        }
+
+        if ($repeatCount >= 7 && $repeatCount <= 12) {
+            $quality += 0.13;
+        } elseif ($repeatCount >= 6 && $repeatCount <= 13) {
+            $quality += 0.08;
+        }
+
+        if ($cycleHits >= 2 && $cycleHits <= 6) {
+            $quality += 0.11;
+        } elseif ($cycleHits >= 1) {
+            $quality += 0.06;
+        }
+
+        if ($sum >= 160 && $sum <= 225) {
+            $quality += 0.08;
+        }
+
+        if ($oddCount >= 5 && $oddCount <= 10) {
+            $quality += 0.08;
+        }
+
+        if ($longestSequence >= 2 && $longestSequence <= 8) {
+            $quality += 0.06;
+        }
+
+        if (max($lineDistribution) <= 5 && min($lineDistribution) >= 1) {
+            $quality += 0.06;
+        }
+
+        if (max($quadrantDistribution) <= 6 && min($quadrantDistribution) >= 1) {
+            $quality += 0.05;
+        }
+
+        if ($frameCount >= 7 && $frameCount <= 13) {
+            $quality += 0.05;
+        }
+
+        if ($clusterStrength >= 7 && $clusterStrength <= 15) {
             $quality += 0.04;
         }
 
         return min(1.0, $quality);
+    }
+
+    protected function aestheticPenalty(
+        float $structureQuality,
+        int $sum,
+        int $oddCount,
+        int $repeatCount,
+        int $longestSequence,
+        float $clusterStrength,
+        array $lineDistribution,
+        array $quadrantDistribution
+    ): float {
+        $penalty = 0.0;
+
+        if ($structureQuality >= 0.92) {
+            $penalty += 1.4;
+        }
+
+        if ($sum >= 180 && $sum <= 205 && $oddCount >= 7 && $oddCount <= 8) {
+            $penalty += 0.8;
+        }
+
+        if ($repeatCount >= 8 && $repeatCount <= 10 && $longestSequence >= 3 && $longestSequence <= 5) {
+            $penalty += 0.7;
+        }
+
+        if ($clusterStrength >= 13) {
+            $penalty += 0.6;
+        }
+
+        if (max($lineDistribution) <= 4 && min($lineDistribution) >= 2) {
+            $penalty += 0.4;
+        }
+
+        if (max($quadrantDistribution) <= 5 && min($quadrantDistribution) >= 2) {
+            $penalty += 0.4;
+        }
+
+        return $penalty;
     }
 
     protected function eliteBonus(
@@ -266,6 +412,7 @@ class FechamentoScoreService
         float $cycleQuality,
         float $correlationQuality,
         float $structureQuality,
+        float $survivalQuality,
         int $repeatCount,
         int $cycleHits,
         int $sum,
@@ -275,44 +422,64 @@ class FechamentoScoreService
     ): float {
         $bonus = 0.0;
 
-        if ($correlationQuality >= 0.70 && $frequencyQuality >= 0.55) {
-            $bonus += 3.8;
+        if ($survivalQuality >= 0.72) {
+            $bonus += 4.2;
         }
 
-        if ($cycleQuality >= 0.55 && $delayQuality >= 0.50) {
+        if ($survivalQuality >= 0.80) {
+            $bonus += 3.5;
+        }
+
+        if ($frequencyQuality >= 0.55 && $cycleQuality >= 0.52) {
             $bonus += 2.8;
         }
 
-        if ($repeatCount >= 8 && $repeatCount <= 11) {
-            $bonus += 3.2;
+        if ($delayQuality >= 0.50 && $cycleQuality >= 0.54) {
+            $bonus += 2.6;
         }
 
-        if ($cycleHits >= 3) {
+        if ($correlationQuality >= 0.68 && $frequencyQuality >= 0.52) {
             $bonus += 2.4;
         }
 
-        if ($sum >= 175 && $sum <= 215) {
-            $bonus += 1.6;
+        if ($repeatCount >= 7 && $repeatCount <= 12) {
+            $bonus += 2.8;
         }
 
-        if ($oddCount >= 6 && $oddCount <= 9) {
+        if ($cycleHits >= 2 && $cycleHits <= 6) {
+            $bonus += 2.5;
+        }
+
+        if ($sum >= 160 && $sum <= 225) {
             $bonus += 1.4;
         }
 
-        if ($longestSequence >= 3 && $longestSequence <= 6) {
-            $bonus += 1.5;
+        if ($oddCount >= 5 && $oddCount <= 10) {
+            $bonus += 1.3;
         }
 
-        if ($clusterStrength >= 9) {
+        if ($longestSequence >= 2 && $longestSequence <= 8) {
             $bonus += 1.2;
         }
 
+        if ($clusterStrength >= 7 && $clusterStrength <= 15) {
+            $bonus += 1.0;
+        }
+
         if (
-            $correlationQuality >= 0.72 &&
-            $frequencyQuality >= 0.58 &&
-            $structureQuality >= 0.65
+            $survivalQuality >= 0.76 &&
+            $frequencyQuality >= 0.54 &&
+            $cycleQuality >= 0.52 &&
+            $correlationQuality >= 0.66
         ) {
-            $bonus += 5.0;
+            $bonus += 5.5;
+        }
+
+        if (
+            $structureQuality >= 0.72 &&
+            $survivalQuality < 0.62
+        ) {
+            $bonus -= 2.5;
         }
 
         return $bonus;

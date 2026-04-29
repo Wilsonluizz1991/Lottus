@@ -13,29 +13,94 @@ class FechamentoReducer
             return [];
         }
 
-        $pool = array_values($scoredCombinations);
+        $dezenasBase = array_values(array_unique(array_map('intval', $dezenasBase)));
+        sort($dezenasBase);
 
-        usort($pool, fn ($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
+        $pool = $this->normalizePool($scoredCombinations, $dezenasBase);
+
+        if (empty($pool)) {
+            return [];
+        }
+
+        usort($pool, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
+
+        $pool = $this->prepareNormalizedScore($pool);
 
         $selected = [];
         $seen = [];
+        $coveredOmittedSingles = [];
+        $coveredOmittedPairs = [];
+        $coveredOmittedTriples = [];
+        $omittedFrequency = [];
 
-        $eliteSeeds = $this->extractEliteSeeds($pool, $quantidadeJogos);
+        $candidateWindow = min(
+            count($pool),
+            max(
+                $quantidadeJogos * 120,
+                (int) config('lottus_fechamento.reducer.candidate_window', 2500)
+            )
+        );
 
-        foreach ($eliteSeeds as $candidate) {
-            $this->tryAdd($selected, $seen, $candidate, $quantidadeJogos);
+        $workingPool = array_slice($pool, 0, $candidateWindow);
+
+        $eliteSeedCount = min(
+            max(4, (int) floor($quantidadeJogos * 0.14)),
+            count($workingPool)
+        );
+
+        $eliteSeeds = array_slice($workingPool, 0, $eliteSeedCount);
+
+        foreach ($eliteSeeds as $eliteCandidate) {
+            $this->addCandidate(
+                selected: $selected,
+                seen: $seen,
+                candidate: $eliteCandidate,
+                coveredOmittedSingles: $coveredOmittedSingles,
+                coveredOmittedPairs: $coveredOmittedPairs,
+                coveredOmittedTriples: $coveredOmittedTriples,
+                omittedFrequency: $omittedFrequency
+            );
         }
 
-        foreach ($pool as $candidate) {
-            if (count($selected) >= $quantidadeJogos) {
+        while (count($selected) < $quantidadeJogos && count($selected) < count($workingPool)) {
+            $bestIndex = null;
+            $bestValue = null;
+
+            foreach ($workingPool as $index => $candidate) {
+                $key = $this->candidateKey($candidate['dezenas'] ?? []);
+
+                if (isset($seen[$key])) {
+                    continue;
+                }
+
+                $value = $this->portfolioValue(
+                    candidate: $candidate,
+                    selected: $selected,
+                    coveredOmittedSingles: $coveredOmittedSingles,
+                    coveredOmittedPairs: $coveredOmittedPairs,
+                    coveredOmittedTriples: $coveredOmittedTriples,
+                    omittedFrequency: $omittedFrequency
+                );
+
+                if ($bestValue === null || $value > $bestValue) {
+                    $bestValue = $value;
+                    $bestIndex = $index;
+                }
+            }
+
+            if ($bestIndex === null) {
                 break;
             }
 
-            if (! $this->isCoverageUseful($candidate, $selected, $dezenasBase)) {
-                continue;
-            }
-
-            $this->tryAdd($selected, $seen, $candidate, $quantidadeJogos);
+            $this->addCandidate(
+                selected: $selected,
+                seen: $seen,
+                candidate: $workingPool[$bestIndex],
+                coveredOmittedSingles: $coveredOmittedSingles,
+                coveredOmittedPairs: $coveredOmittedPairs,
+                coveredOmittedTriples: $coveredOmittedTriples,
+                omittedFrequency: $omittedFrequency
+            );
         }
 
         if (count($selected) < $quantidadeJogos) {
@@ -44,35 +109,140 @@ class FechamentoReducer
                     break;
                 }
 
-                $this->tryAdd($selected, $seen, $candidate, $quantidadeJogos);
+                $this->addCandidate(
+                    selected: $selected,
+                    seen: $seen,
+                    candidate: $candidate,
+                    coveredOmittedSingles: $coveredOmittedSingles,
+                    coveredOmittedPairs: $coveredOmittedPairs,
+                    coveredOmittedTriples: $coveredOmittedTriples,
+                    omittedFrequency: $omittedFrequency
+                );
             }
         }
 
-        usort($selected, fn ($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
+        foreach ($selected as $index => &$candidate) {
+            $candidate['portfolio_order'] = $index + 1;
+        }
+
+        unset($candidate);
 
         return array_slice($selected, 0, $quantidadeJogos);
     }
 
-    protected function extractEliteSeeds(array $pool, int $quantidadeJogos): array
+    protected function normalizePool(array $scoredCombinations, array $dezenasBase): array
     {
-        $limit = min(
-            max(5, (int) ceil($quantidadeJogos * 0.18)),
-            count($pool)
-        );
+        $pool = [];
+        $seen = [];
 
-        return array_slice($pool, 0, $limit);
+        foreach ($scoredCombinations as $candidate) {
+            $game = $candidate['dezenas'] ?? $candidate;
+
+            $game = array_values(array_unique(array_map('intval', $game)));
+            sort($game);
+
+            if (count($game) !== 15) {
+                continue;
+            }
+
+            $key = $this->candidateKey($game);
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $omitted = array_values(array_diff($dezenasBase, $game));
+            sort($omitted);
+
+            if (count($omitted) !== count($dezenasBase) - 15) {
+                continue;
+            }
+
+            $candidate['dezenas'] = $game;
+            $candidate['omitted_dezenas'] = $omitted;
+            $candidate['omitted_key'] = $this->candidateKey($omitted);
+
+            $pool[] = $candidate;
+            $seen[$key] = true;
+        }
+
+        return $pool;
     }
 
-    protected function tryAdd(
+    protected function prepareNormalizedScore(array $pool): array
+    {
+        $scores = array_map(
+            fn($candidate) => (float) ($candidate['score'] ?? 0.0),
+            $pool
+        );
+
+        $min = min($scores);
+        $max = max($scores);
+
+        foreach ($pool as &$candidate) {
+            $score = (float) ($candidate['score'] ?? 0.0);
+
+            if ($max <= $min) {
+                $candidate['normalized_score'] = 1.0;
+            } else {
+                $candidate['normalized_score'] = ($score - $min) / ($max - $min);
+            }
+        }
+
+        unset($candidate);
+
+        return $pool;
+    }
+
+    protected function portfolioValue(
+        array $candidate,
+        array $selected,
+        array $coveredOmittedSingles,
+        array $coveredOmittedPairs,
+        array $coveredOmittedTriples,
+        array $omittedFrequency
+    ): float {
+        $omitted = $candidate['omitted_dezenas'] ?? [];
+        $score = (float) ($candidate['normalized_score'] ?? 0.0);
+        $eliteBonus = (float) ($candidate['elite_bonus'] ?? 0.0);
+
+        $value = 0.0;
+
+        // score bruto mais forte
+        $value += $score * 135.0;
+
+        // elite mais valorizada
+        $value += min(35.0, $eliteBonus * 2.0);
+
+        // diversidade ainda existe
+        $value += $this->newOmittedSinglesValue($omitted, $coveredOmittedSingles);
+        $value += $this->newOmittedPairsValue($omitted, $coveredOmittedPairs);
+        $value += $this->newOmittedTriplesValue($omitted, $coveredOmittedTriples);
+
+        // equilíbrio leve
+        $value += $this->omittedBalanceValue($omitted, $omittedFrequency);
+
+        // distância reduzida
+        $value += $this->omittedDistanceValue($omitted, $selected) * 0.55;
+
+        // penalidade reduzida
+        $value -= $this->omittedClonePenalty($omitted, $selected);
+
+        // bônus por preservação forte
+        $value += $this->elitePreservationBonus($candidate, $selected);
+
+        return $value;
+    }
+
+    protected function addCandidate(
         array &$selected,
         array &$seen,
         array $candidate,
-        int $quantidadeJogos
+        array &$coveredOmittedSingles,
+        array &$coveredOmittedPairs,
+        array &$coveredOmittedTriples,
+        array &$omittedFrequency
     ): bool {
-        if (count($selected) >= $quantidadeJogos) {
-            return false;
-        }
-
         $key = $this->candidateKey($candidate['dezenas'] ?? []);
 
         if (isset($seen[$key])) {
@@ -82,122 +252,240 @@ class FechamentoReducer
         $selected[] = $candidate;
         $seen[$key] = true;
 
+        $omitted = $candidate['omitted_dezenas'] ?? [];
+
+        foreach ($omitted as $number) {
+            $number = (int) $number;
+
+            $coveredOmittedSingles[$number] = true;
+            $omittedFrequency[$number] = ($omittedFrequency[$number] ?? 0) + 1;
+        }
+
+        foreach ($this->subsets($omitted, 2) as $pair) {
+            $coveredOmittedPairs[$this->candidateKey($pair)] = true;
+        }
+
+        foreach ($this->subsets($omitted, 3) as $triple) {
+            $coveredOmittedTriples[$this->candidateKey($triple)] = true;
+        }
+
         return true;
     }
 
-    protected function isCoverageUseful(
-        array $candidate,
-        array $selected,
-        array $dezenasBase
-    ): bool {
-        if (empty($selected)) {
-            return true;
-        }
-
-        $game = $candidate['dezenas'] ?? [];
-
-        if (count($game) !== 15) {
-            return false;
-        }
-
-        $minOverlap = (int) config('lottus_fechamento.reducer.min_overlap_between_games', 9);
-        $maxOverlap = (int) config('lottus_fechamento.reducer.max_overlap_between_games', 14);
-        $eliteOverlapBonusMin = (int) config('lottus_fechamento.reducer.elite_overlap_bonus_min', 11);
-
-        $coverageGain = $this->coverageGain($game, $selected, $dezenasBase);
-        $bestOverlap = $this->bestOverlap($game, $selected);
-        $averageOverlap = $this->averageOverlap($game, $selected);
-
-        if ($bestOverlap >= 15) {
-            return false;
-        }
-
-        if ($bestOverlap > $maxOverlap && $coverageGain < 2) {
-            return false;
-        }
-
-        if ($averageOverlap < $minOverlap && ($candidate['score'] ?? 0) < $this->averageSelectedScore($selected)) {
-            return false;
-        }
-
-        if ($coverageGain >= 2) {
-            return true;
-        }
-
-        if ($bestOverlap >= $eliteOverlapBonusMin && ($candidate['elite_bonus'] ?? 0) > 0) {
-            return true;
-        }
-
-        return ($candidate['score'] ?? 0) >= $this->averageSelectedScore($selected);
-    }
-
-    protected function coverageGain(array $game, array $selected, array $dezenasBase): int
+    protected function newOmittedSinglesValue(array $omitted, array $coveredOmittedSingles): float
     {
-        $covered = [];
+        $value = 0.0;
 
-        foreach ($selected as $selectedGame) {
-            foreach (($selectedGame['dezenas'] ?? []) as $number) {
-                $covered[(int) $number] = true;
+        foreach ($omitted as $number) {
+            if (! isset($coveredOmittedSingles[(int) $number])) {
+                $value += 16.0;
             }
         }
 
-        $gain = 0;
+        return $value;
+    }
 
-        foreach ($game as $number) {
-            $number = (int) $number;
+    protected function newOmittedPairsValue(array $omitted, array $coveredOmittedPairs): float
+    {
+        $value = 0.0;
 
-            if (! in_array($number, $dezenasBase, true)) {
+        foreach ($this->subsets($omitted, 2) as $pair) {
+            if (! isset($coveredOmittedPairs[$this->candidateKey($pair)])) {
+                $value += 7.0;
+            }
+        }
+
+        return $value;
+    }
+
+    protected function newOmittedTriplesValue(array $omitted, array $coveredOmittedTriples): float
+    {
+        $value = 0.0;
+
+        foreach ($this->subsets($omitted, 3) as $triple) {
+            if (! isset($coveredOmittedTriples[$this->candidateKey($triple)])) {
+                $value += 4.5;
+            }
+        }
+
+        return $value;
+    }
+
+    protected function omittedBalanceValue(array $omitted, array $omittedFrequency): float
+    {
+        if (empty($omitted)) {
+            return 0.0;
+        }
+
+        $value = 0.0;
+
+        foreach ($omitted as $number) {
+            $frequency = (int) ($omittedFrequency[(int) $number] ?? 0);
+
+            if ($frequency === 0) {
+                $value += 10.0;
+            } elseif ($frequency <= 2) {
+                $value += 5.0;
+            } elseif ($frequency <= 5) {
+                $value += 2.0;
+            } else {
+                $value -= min(12.0, ($frequency - 5) * 1.5);
+            }
+        }
+
+        return $value;
+    }
+
+    protected function omittedDistanceValue(array $omitted, array $selected): float
+    {
+        if (empty($selected)) {
+            return 0.0;
+        }
+
+        $totalDistance = 0.0;
+        $comparisons = 0;
+
+        foreach ($selected as $selectedGame) {
+            $selectedOmitted = $selectedGame['omitted_dezenas'] ?? [];
+
+            $intersection = count(array_intersect($omitted, $selectedOmitted));
+            $union = count(array_unique(array_merge($omitted, $selectedOmitted)));
+
+            if ($union === 0) {
                 continue;
             }
 
-            if (! isset($covered[$number])) {
-                $gain++;
+            $totalDistance += 1.0 - ($intersection / $union);
+            $comparisons++;
+        }
+
+        if ($comparisons === 0) {
+            return 0.0;
+        }
+
+        return ($totalDistance / $comparisons) * 22.0;
+    }
+
+    protected function omittedClonePenalty(array $omitted, array $selected): float
+    {
+        if (empty($selected)) {
+            return 0.0;
+        }
+
+        $penalty = 0.0;
+        $omittedCount = count($omitted);
+
+        foreach ($selected as $selectedGame) {
+            $selectedOmitted = $selectedGame['omitted_dezenas'] ?? [];
+            $overlap = count(array_intersect($omitted, $selectedOmitted));
+
+            // clone absoluto ainda proibido
+            if ($overlap === $omittedCount && $omittedCount > 0) {
+                $penalty += 180.0;
+                continue;
+            }
+
+            // overlap quase total
+            if ($omittedCount >= 3 && $overlap === 3) {
+                $penalty += 4.5;
+                continue;
+            }
+
+            // overlap controlado
+            if ($omittedCount >= 3 && $overlap === 2) {
+                $penalty += 1.2;
+                continue;
+            }
+
+            // overlap leve
+            if ($overlap === 1) {
+                $penalty += 0.15;
             }
         }
 
-        return $gain;
+        return $penalty;
     }
 
-    protected function bestOverlap(array $game, array $selected): int
-    {
-        $best = 0;
-
-        foreach ($selected as $selectedGame) {
-            $overlap = count(array_intersect($game, $selectedGame['dezenas'] ?? []));
-            $best = max($best, $overlap);
-        }
-
-        return $best;
-    }
-
-    protected function averageOverlap(array $game, array $selected): float
+    protected function elitePreservationBonus(array $candidate, array $selected): float
     {
         if (empty($selected)) {
             return 0.0;
         }
 
-        $total = 0;
+        $bonus = 0.0;
 
-        foreach ($selected as $selectedGame) {
-            $total += count(array_intersect($game, $selectedGame['dezenas'] ?? []));
+        $candidateScore = (float) ($candidate['normalized_score'] ?? 0.0);
+        $eliteBonus = (float) ($candidate['elite_bonus'] ?? 0.0);
+
+        if ($candidateScore >= 0.88) {
+            $bonus += 12.0;
         }
 
-        return $total / count($selected);
+        if ($candidateScore >= 0.93) {
+            $bonus += 18.0;
+        }
+
+        if ($eliteBonus >= 4.0) {
+            $bonus += 10.0;
+        }
+
+        if ($eliteBonus >= 7.0) {
+            $bonus += 18.0;
+        }
+
+        return $bonus;
     }
 
-    protected function averageSelectedScore(array $selected): float
+    protected function subsets(array $numbers, int $size): array
     {
-        if (empty($selected)) {
-            return 0.0;
+        $numbers = array_values(array_unique(array_map('intval', $numbers)));
+        sort($numbers);
+
+        if ($size <= 0 || count($numbers) < $size) {
+            return [];
         }
 
-        $total = 0.0;
+        $result = [];
 
-        foreach ($selected as $selectedGame) {
-            $total += (float) ($selectedGame['score'] ?? 0.0);
+        $this->buildSubsets(
+            source: $numbers,
+            size: $size,
+            start: 0,
+            current: [],
+            result: $result
+        );
+
+        return $result;
+    }
+
+    protected function buildSubsets(
+        array $source,
+        int $size,
+        int $start,
+        array $current,
+        array &$result
+    ): void {
+        if (count($current) === $size) {
+            $result[] = $current;
+
+            return;
         }
 
-        return $total / count($selected);
+        $remainingNeeded = $size - count($current);
+
+        for ($i = $start; $i <= count($source) - $remainingNeeded; $i++) {
+            $current[] = $source[$i];
+
+            $this->buildSubsets(
+                source: $source,
+                size: $size,
+                start: $i + 1,
+                current: $current,
+                result: $result
+            );
+
+            array_pop($current);
+        }
     }
 
     protected function candidateKey(array $dezenas): string
