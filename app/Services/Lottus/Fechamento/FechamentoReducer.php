@@ -36,19 +36,19 @@ class FechamentoReducer
         $candidateWindow = min(
             count($pool),
             max(
-                $quantidadeJogos * 120,
-                (int) config('lottus_fechamento.reducer.candidate_window', 2500)
+                $quantidadeJogos * 80,
+                (int) config('lottus_fechamento.reducer.candidate_window', 1800)
             )
         );
 
         $workingPool = array_slice($pool, 0, $candidateWindow);
 
         $maxPoolSize = match ($quantidadeJogos) {
-            90 => 1800,
-            72 => 1500,
-            54 => 1200,
-            36 => 900,
-            default => 800,
+            90 => 900,
+            72 => 800,
+            54 => 700,
+            36 => 600,
+            default => 500,
         };
 
         if (count($workingPool) > $maxPoolSize) {
@@ -56,7 +56,7 @@ class FechamentoReducer
         }
 
         $eliteSeedCount = min(
-            max(4, (int) floor($quantidadeJogos * 0.14)),
+            max(4, (int) floor($quantidadeJogos * 0.12)),
             count($workingPool)
         );
 
@@ -74,40 +74,39 @@ class FechamentoReducer
             );
         }
 
-        while (count($selected) < $quantidadeJogos && count($selected) < count($workingPool)) {
-            $bestIndex = null;
-            $bestValue = null;
+        $rankedPool = [];
 
-            foreach ($workingPool as $index => $candidate) {
-                $key = $this->candidateKey($candidate['dezenas'] ?? []);
+        foreach ($workingPool as $candidate) {
+            $key = $this->candidateKey($candidate['dezenas'] ?? []);
 
-                if (isset($seen[$key])) {
-                    continue;
-                }
-
-                $value = $this->portfolioValue(
-                    candidate: $candidate,
-                    selected: $selected,
-                    coveredOmittedSingles: $coveredOmittedSingles,
-                    coveredOmittedPairs: $coveredOmittedPairs,
-                    coveredOmittedTriples: $coveredOmittedTriples,
-                    omittedFrequency: $omittedFrequency
-                );
-
-                if ($bestValue === null || $value > $bestValue) {
-                    $bestValue = $value;
-                    $bestIndex = $index;
-                }
+            if (isset($seen[$key])) {
+                continue;
             }
 
-            if ($bestIndex === null) {
+            $candidate['_pre_score'] = $this->fastPortfolioValue($candidate);
+
+            $rankedPool[] = $candidate;
+        }
+
+        usort($rankedPool, function (array $a, array $b): int {
+            $scoreComparison = ($b['_pre_score'] ?? 0) <=> ($a['_pre_score'] ?? 0);
+
+            if ($scoreComparison !== 0) {
+                return $scoreComparison;
+            }
+
+            return ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
+        });
+
+        foreach ($rankedPool as $candidate) {
+            if (count($selected) >= $quantidadeJogos) {
                 break;
             }
 
             $this->addCandidate(
                 selected: $selected,
                 seen: $seen,
-                candidate: $workingPool[$bestIndex],
+                candidate: $candidate,
                 coveredOmittedSingles: $coveredOmittedSingles,
                 coveredOmittedPairs: $coveredOmittedPairs,
                 coveredOmittedTriples: $coveredOmittedTriples,
@@ -135,6 +134,10 @@ class FechamentoReducer
 
         foreach ($selected as $index => &$candidate) {
             $candidate['portfolio_order'] = $index + 1;
+
+            if (isset($candidate['_pre_score'])) {
+                unset($candidate['_pre_score']);
+            }
         }
 
         unset($candidate);
@@ -206,6 +209,33 @@ class FechamentoReducer
         return $pool;
     }
 
+    protected function fastPortfolioValue(array $candidate): float
+    {
+        $score = (float) ($candidate['normalized_score'] ?? 0.0);
+        $baseScore = (float) ($candidate['base_score'] ?? 0.0);
+        $eliteBonus = (float) ($candidate['elite_bonus'] ?? 0.0);
+        $survivalQuality = (float) ($candidate['survival_quality'] ?? 0.0);
+        $frequencyQuality = (float) ($candidate['frequency_quality'] ?? 0.0);
+        $cycleQuality = (float) ($candidate['cycle_quality'] ?? 0.0);
+        $delayQuality = (float) ($candidate['delay_quality'] ?? 0.0);
+        $correlationQuality = (float) ($candidate['correlation_quality'] ?? 0.0);
+        $structureQuality = (float) ($candidate['structure_quality'] ?? 0.0);
+
+        $value = 0.0;
+
+        $value += $score * 150.0;
+        $value += $baseScore * 0.80;
+        $value += min(45.0, $eliteBonus * 2.4);
+        $value += $survivalQuality * 35.0;
+        $value += $frequencyQuality * 14.0;
+        $value += $cycleQuality * 14.0;
+        $value += $delayQuality * 10.0;
+        $value += $correlationQuality * 10.0;
+        $value += min(8.0, $structureQuality * 8.0);
+
+        return $value;
+    }
+
     protected function portfolioValue(
         array $candidate,
         array $selected,
@@ -230,7 +260,7 @@ class FechamentoReducer
         $value += $this->newOmittedTriplesValue($omitted, $coveredOmittedTriples);
 
         $value += $this->omittedBalanceValue($omitted, $omittedFrequency);
-        $value += $this->omittedDistanceValue($omitted, $selected) * 0.40;
+        $value += $this->omittedDistanceValue($omitted, $selected) * 0.35;
         $value -= $this->omittedClonePenalty($omitted, $selected);
         $value += $this->elitePreservationBonus($candidate, $selected);
 
@@ -410,7 +440,12 @@ class FechamentoReducer
         $omittedCount = count($omitted);
 
         foreach ($selected as $selectedGame) {
-            $selectedOmitted = $selectedGame['omitted_dezenas'] ?? [];
+            $selectedOmitted = array_values(array_unique(array_map(
+                'intval',
+                $selectedGame['omitted_dezenas'] ?? []
+            )));
+            sort($selectedOmitted);
+
             $overlap = count(array_intersect($omitted, $selectedOmitted));
 
             if ($overlap === $omittedCount && $omittedCount > 0) {
