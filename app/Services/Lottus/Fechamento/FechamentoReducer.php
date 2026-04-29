@@ -44,11 +44,11 @@ class FechamentoReducer
         $workingPool = array_slice($pool, 0, $candidateWindow);
 
         $maxPoolSize = match ($quantidadeJogos) {
-            90 => 2800,
-            72 => 2200,
-            54 => 1800,
-            36 => 1400,
-            default => 1200,
+            90 => 1800,
+            72 => 1500,
+            54 => 1200,
+            36 => 900,
+            default => 800,
         };
 
         if (count($workingPool) > $maxPoolSize) {
@@ -116,7 +116,7 @@ class FechamentoReducer
         }
 
         if (count($selected) < $quantidadeJogos) {
-            foreach ($pool as $candidate) {
+            foreach ($workingPool as $candidate) {
                 if (count($selected) >= $quantidadeJogos) {
                     break;
                 }
@@ -214,7 +214,9 @@ class FechamentoReducer
         array $coveredOmittedTriples,
         array $omittedFrequency
     ): float {
-        $omitted = $candidate['omitted_dezenas'] ?? [];
+        $omitted = array_values(array_unique(array_map('intval', $candidate['omitted_dezenas'] ?? [])));
+        sort($omitted);
+
         $score = (float) ($candidate['normalized_score'] ?? 0.0);
         $eliteBonus = (float) ($candidate['elite_bonus'] ?? 0.0);
 
@@ -228,7 +230,7 @@ class FechamentoReducer
         $value += $this->newOmittedTriplesValue($omitted, $coveredOmittedTriples);
 
         $value += $this->omittedBalanceValue($omitted, $omittedFrequency);
-        $value += $this->omittedDistanceValue($omitted, $selected) * 0.55;
+        $value += $this->omittedDistanceValue($omitted, $selected) * 0.40;
         $value -= $this->omittedClonePenalty($omitted, $selected);
         $value += $this->elitePreservationBonus($candidate, $selected);
 
@@ -253,21 +255,30 @@ class FechamentoReducer
         $selected[] = $candidate;
         $seen[$key] = true;
 
-        $omitted = $candidate['omitted_dezenas'] ?? [];
+        $omitted = array_values(array_unique(
+            array_map('intval', $candidate['omitted_dezenas'] ?? [])
+        ));
+        sort($omitted);
+
+        $count = count($omitted);
 
         foreach ($omitted as $number) {
-            $number = (int) $number;
-
             $coveredOmittedSingles[$number] = true;
             $omittedFrequency[$number] = ($omittedFrequency[$number] ?? 0) + 1;
         }
 
-        foreach ($this->subsets($omitted, 2) as $pair) {
-            $coveredOmittedPairs[$this->candidateKey($pair)] = true;
+        for ($i = 0; $i < $count; $i++) {
+            for ($j = $i + 1; $j < $count; $j++) {
+                $coveredOmittedPairs[$omitted[$i] . '-' . $omitted[$j]] = true;
+            }
         }
 
-        foreach ($this->subsets($omitted, 3) as $triple) {
-            $coveredOmittedTriples[$this->candidateKey($triple)] = true;
+        for ($i = 0; $i < $count; $i++) {
+            for ($j = $i + 1; $j < $count; $j++) {
+                for ($k = $j + 1; $k < $count; $k++) {
+                    $coveredOmittedTriples[$omitted[$i] . '-' . $omitted[$j] . '-' . $omitted[$k]] = true;
+                }
+            }
         }
 
         return true;
@@ -288,11 +299,19 @@ class FechamentoReducer
 
     protected function newOmittedPairsValue(array $omitted, array $coveredOmittedPairs): float
     {
-        $value = 0.0;
+        $omitted = array_values(array_unique(array_map('intval', $omitted)));
+        sort($omitted);
 
-        foreach ($this->subsets($omitted, 2) as $pair) {
-            if (! isset($coveredOmittedPairs[$this->candidateKey($pair)])) {
-                $value += 7.0;
+        $value = 0.0;
+        $count = count($omitted);
+
+        for ($i = 0; $i < $count; $i++) {
+            for ($j = $i + 1; $j < $count; $j++) {
+                $key = $omitted[$i] . '-' . $omitted[$j];
+
+                if (! isset($coveredOmittedPairs[$key])) {
+                    $value += 7.0;
+                }
             }
         }
 
@@ -301,11 +320,21 @@ class FechamentoReducer
 
     protected function newOmittedTriplesValue(array $omitted, array $coveredOmittedTriples): float
     {
-        $value = 0.0;
+        $omitted = array_values(array_unique(array_map('intval', $omitted)));
+        sort($omitted);
 
-        foreach ($this->subsets($omitted, 3) as $triple) {
-            if (! isset($coveredOmittedTriples[$this->candidateKey($triple)])) {
-                $value += 4.5;
+        $value = 0.0;
+        $count = count($omitted);
+
+        for ($i = 0; $i < $count; $i++) {
+            for ($j = $i + 1; $j < $count; $j++) {
+                for ($k = $j + 1; $k < $count; $k++) {
+                    $key = $omitted[$i] . '-' . $omitted[$j] . '-' . $omitted[$k];
+
+                    if (! isset($coveredOmittedTriples[$key])) {
+                        $value += 4.5;
+                    }
+                }
             }
         }
 
@@ -347,7 +376,11 @@ class FechamentoReducer
         $comparisons = 0;
 
         foreach ($selected as $selectedGame) {
-            $selectedOmitted = $selectedGame['omitted_dezenas'] ?? [];
+            $selectedOmitted = array_values(array_unique(array_map(
+                'intval',
+                $selectedGame['omitted_dezenas'] ?? []
+            )));
+            sort($selectedOmitted);
 
             $intersection = count(array_intersect($omitted, $selectedOmitted));
             $union = count(array_unique(array_merge($omitted, $selectedOmitted)));
@@ -431,58 +464,6 @@ class FechamentoReducer
         }
 
         return $bonus;
-    }
-
-    protected function subsets(array $numbers, int $size): array
-    {
-        $numbers = array_values(array_unique(array_map('intval', $numbers)));
-        sort($numbers);
-
-        if ($size <= 0 || count($numbers) < $size) {
-            return [];
-        }
-
-        $result = [];
-
-        $this->buildSubsets(
-            source: $numbers,
-            size: $size,
-            start: 0,
-            current: [],
-            result: $result
-        );
-
-        return $result;
-    }
-
-    protected function buildSubsets(
-        array $source,
-        int $size,
-        int $start,
-        array $current,
-        array &$result
-    ): void {
-        if (count($current) === $size) {
-            $result[] = $current;
-
-            return;
-        }
-
-        $remainingNeeded = $size - count($current);
-
-        for ($i = $start; $i <= count($source) - $remainingNeeded; $i++) {
-            $current[] = $source[$i];
-
-            $this->buildSubsets(
-                source: $source,
-                size: $size,
-                start: $i + 1,
-                current: $current,
-                result: $result
-            );
-
-            array_pop($current);
-        }
     }
 
     protected function candidateKey(array $dezenas): string
