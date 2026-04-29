@@ -22,7 +22,7 @@ class FechamentoReducer
             return [];
         }
 
-        usort($pool, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
+        usort($pool, fn ($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
 
         $pool = $this->prepareNormalizedScore($pool);
 
@@ -42,6 +42,18 @@ class FechamentoReducer
         );
 
         $workingPool = array_slice($pool, 0, $candidateWindow);
+
+        $maxPoolSize = match ($quantidadeJogos) {
+            90 => 2800,
+            72 => 2200,
+            54 => 1800,
+            36 => 1400,
+            default => 1200,
+        };
+
+        if (count($workingPool) > $maxPoolSize) {
+            $workingPool = array_slice($workingPool, 0, $maxPoolSize);
+        }
 
         $eliteSeedCount = min(
             max(4, (int) floor($quantidadeJogos * 0.14)),
@@ -172,7 +184,7 @@ class FechamentoReducer
     protected function prepareNormalizedScore(array $pool): array
     {
         $scores = array_map(
-            fn($candidate) => (float) ($candidate['score'] ?? 0.0),
+            fn ($candidate) => (float) ($candidate['score'] ?? 0.0),
             $pool
         );
 
@@ -208,27 +220,16 @@ class FechamentoReducer
 
         $value = 0.0;
 
-        // score bruto mais forte
         $value += $score * 135.0;
-
-        // elite mais valorizada
         $value += min(35.0, $eliteBonus * 2.0);
 
-        // diversidade ainda existe
         $value += $this->newOmittedSinglesValue($omitted, $coveredOmittedSingles);
         $value += $this->newOmittedPairsValue($omitted, $coveredOmittedPairs);
         $value += $this->newOmittedTriplesValue($omitted, $coveredOmittedTriples);
 
-        // equilíbrio leve
         $value += $this->omittedBalanceValue($omitted, $omittedFrequency);
-
-        // distância reduzida
         $value += $this->omittedDistanceValue($omitted, $selected) * 0.55;
-
-        // penalidade reduzida
         $value -= $this->omittedClonePenalty($omitted, $selected);
-
-        // bônus por preservação forte
         $value += $this->elitePreservationBonus($candidate, $selected);
 
         return $value;
@@ -379,25 +380,21 @@ class FechamentoReducer
             $selectedOmitted = $selectedGame['omitted_dezenas'] ?? [];
             $overlap = count(array_intersect($omitted, $selectedOmitted));
 
-            // clone absoluto ainda proibido
             if ($overlap === $omittedCount && $omittedCount > 0) {
                 $penalty += 180.0;
                 continue;
             }
 
-            // overlap quase total
             if ($omittedCount >= 3 && $overlap === 3) {
                 $penalty += 4.5;
                 continue;
             }
 
-            // overlap controlado
             if ($omittedCount >= 3 && $overlap === 2) {
                 $penalty += 1.2;
                 continue;
             }
 
-            // overlap leve
             if ($overlap === 1) {
                 $penalty += 0.15;
             }
