@@ -10,4 +10,4 @@ Artisan::command('inspire', function () {
 Schedule::command('lottus:sincronizar-lotofacil')
     ->days([1, 2, 3, 4, 5, 6]) // segunda a sábado
     ->at('22:00')
-    ->timezone(config('app.timezone'));
+    ->timezone('America/Sao_Paulo');
