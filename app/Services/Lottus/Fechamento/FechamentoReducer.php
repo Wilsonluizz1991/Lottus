@@ -36,27 +36,46 @@ class FechamentoReducer
         $candidateWindow = min(
             count($pool),
             max(
-                $quantidadeJogos * 80,
-                (int) config('lottus_fechamento.reducer.candidate_window', 1800)
+                $quantidadeJogos * 140,
+                (int) config('lottus_fechamento.reducer.candidate_window', 2600)
             )
         );
 
         $workingPool = array_slice($pool, 0, $candidateWindow);
 
         $maxPoolSize = match ($quantidadeJogos) {
-            90 => 900,
-            72 => 800,
-            54 => 700,
-            36 => 600,
-            default => 500,
+            90 => 1800,
+            72 => 1500,
+            54 => 1200,
+            36 => 950,
+            default => 800,
         };
 
         if (count($workingPool) > $maxPoolSize) {
             $workingPool = array_slice($workingPool, 0, $maxPoolSize);
         }
 
+        $rawGuardSeedCount = min(
+            max(12, (int) floor($quantidadeJogos * 0.42)),
+            count($workingPool)
+        );
+
+        $rawGuardSeeds = array_slice($workingPool, 0, $rawGuardSeedCount);
+
+        foreach ($rawGuardSeeds as $rawCandidate) {
+            $this->addCandidate(
+                selected: $selected,
+                seen: $seen,
+                candidate: $rawCandidate,
+                coveredOmittedSingles: $coveredOmittedSingles,
+                coveredOmittedPairs: $coveredOmittedPairs,
+                coveredOmittedTriples: $coveredOmittedTriples,
+                omittedFrequency: $omittedFrequency
+            );
+        }
+
         $eliteSeedCount = min(
-            max(4, (int) floor($quantidadeJogos * 0.12)),
+            max(8, (int) floor($quantidadeJogos * 0.28)),
             count($workingPool)
         );
 
@@ -83,19 +102,26 @@ class FechamentoReducer
                 continue;
             }
 
-            $candidate['_pre_score'] = $this->fastPortfolioValue($candidate);
+            $candidate['_pre_score'] = $this->portfolioValue(
+                candidate: $candidate,
+                selected: $selected,
+                coveredOmittedSingles: $coveredOmittedSingles,
+                coveredOmittedPairs: $coveredOmittedPairs,
+                coveredOmittedTriples: $coveredOmittedTriples,
+                omittedFrequency: $omittedFrequency
+            );
 
             $rankedPool[] = $candidate;
         }
 
         usort($rankedPool, function (array $a, array $b): int {
-            $scoreComparison = ($b['_pre_score'] ?? 0) <=> ($a['_pre_score'] ?? 0);
+            $preComparison = ($b['_pre_score'] ?? 0) <=> ($a['_pre_score'] ?? 0);
 
-            if ($scoreComparison !== 0) {
-                return $scoreComparison;
+            if ($preComparison !== 0) {
+                return $preComparison;
             }
 
-            return ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
+            return ($b['normalized_score'] ?? 0) <=> ($a['normalized_score'] ?? 0);
         });
 
         foreach ($rankedPool as $candidate) {
@@ -132,12 +158,12 @@ class FechamentoReducer
             }
         }
 
+        $selected = $this->finalRawScoreOrdering($selected);
+
         foreach ($selected as $index => &$candidate) {
             $candidate['portfolio_order'] = $index + 1;
 
-            if (isset($candidate['_pre_score'])) {
-                unset($candidate['_pre_score']);
-            }
+            unset($candidate['_pre_score']);
         }
 
         unset($candidate);
@@ -209,7 +235,32 @@ class FechamentoReducer
         return $pool;
     }
 
-    protected function fastPortfolioValue(array $candidate): float
+    protected function portfolioValue(
+        array $candidate,
+        array $selected,
+        array $coveredOmittedSingles,
+        array $coveredOmittedPairs,
+        array $coveredOmittedTriples,
+        array $omittedFrequency
+    ): float {
+        $omitted = array_values(array_unique(array_map('intval', $candidate['omitted_dezenas'] ?? [])));
+        sort($omitted);
+
+        $value = 0.0;
+
+        $value += $this->rawSovereignScore($candidate);
+        $value += $this->newOmittedSinglesValue($omitted, $coveredOmittedSingles);
+        $value += $this->newOmittedPairsValue($omitted, $coveredOmittedPairs);
+        $value += $this->newOmittedTriplesValue($omitted, $coveredOmittedTriples);
+        $value += $this->omittedBalanceValue($omitted, $omittedFrequency) * 0.35;
+        $value += $this->omittedDistanceValue($omitted, $selected) * 0.08;
+        $value -= $this->omittedClonePenalty($omitted, $selected);
+        $value += $this->elitePreservationBonus($candidate);
+
+        return $value;
+    }
+
+    protected function rawSovereignScore(array $candidate): float
     {
         $score = (float) ($candidate['normalized_score'] ?? 0.0);
         $baseScore = (float) ($candidate['base_score'] ?? 0.0);
@@ -223,46 +274,27 @@ class FechamentoReducer
 
         $value = 0.0;
 
-        $value += $score * 150.0;
-        $value += $baseScore * 0.80;
-        $value += min(45.0, $eliteBonus * 2.4);
-        $value += $survivalQuality * 35.0;
-        $value += $frequencyQuality * 14.0;
-        $value += $cycleQuality * 14.0;
-        $value += $delayQuality * 10.0;
-        $value += $correlationQuality * 10.0;
-        $value += min(8.0, $structureQuality * 8.0);
+        $value += $score * 420.0;
+        $value += $baseScore * 1.55;
+        $value += min(120.0, $eliteBonus * 6.0);
+        $value += $survivalQuality * 76.0;
+        $value += $frequencyQuality * 26.0;
+        $value += $cycleQuality * 26.0;
+        $value += $delayQuality * 22.0;
+        $value += $correlationQuality * 22.0;
+        $value += $structureQuality * 18.0;
 
-        return $value;
-    }
-
-    protected function portfolioValue(
-        array $candidate,
-        array $selected,
-        array $coveredOmittedSingles,
-        array $coveredOmittedPairs,
-        array $coveredOmittedTriples,
-        array $omittedFrequency
-    ): float {
-        $omitted = array_values(array_unique(array_map('intval', $candidate['omitted_dezenas'] ?? [])));
-        sort($omitted);
-
-        $score = (float) ($candidate['normalized_score'] ?? 0.0);
-        $eliteBonus = (float) ($candidate['elite_bonus'] ?? 0.0);
-
-        $value = 0.0;
-
-        $value += $score * 135.0;
-        $value += min(35.0, $eliteBonus * 2.0);
-
-        $value += $this->newOmittedSinglesValue($omitted, $coveredOmittedSingles);
-        $value += $this->newOmittedPairsValue($omitted, $coveredOmittedPairs);
-        $value += $this->newOmittedTriplesValue($omitted, $coveredOmittedTriples);
-
-        $value += $this->omittedBalanceValue($omitted, $omittedFrequency);
-        $value += $this->omittedDistanceValue($omitted, $selected) * 0.35;
-        $value -= $this->omittedClonePenalty($omitted, $selected);
-        $value += $this->elitePreservationBonus($candidate, $selected);
+        if ($score >= 0.98) {
+            $value += 340.0;
+        } elseif ($score >= 0.95) {
+            $value += 245.0;
+        } elseif ($score >= 0.92) {
+            $value += 165.0;
+        } elseif ($score >= 0.88) {
+            $value += 95.0;
+        } elseif ($score >= 0.82) {
+            $value += 42.0;
+        }
 
         return $value;
     }
@@ -320,7 +352,7 @@ class FechamentoReducer
 
         foreach ($omitted as $number) {
             if (! isset($coveredOmittedSingles[(int) $number])) {
-                $value += 16.0;
+                $value += 4.5;
             }
         }
 
@@ -329,9 +361,6 @@ class FechamentoReducer
 
     protected function newOmittedPairsValue(array $omitted, array $coveredOmittedPairs): float
     {
-        $omitted = array_values(array_unique(array_map('intval', $omitted)));
-        sort($omitted);
-
         $value = 0.0;
         $count = count($omitted);
 
@@ -340,7 +369,7 @@ class FechamentoReducer
                 $key = $omitted[$i] . '-' . $omitted[$j];
 
                 if (! isset($coveredOmittedPairs[$key])) {
-                    $value += 7.0;
+                    $value += 1.2;
                 }
             }
         }
@@ -350,9 +379,6 @@ class FechamentoReducer
 
     protected function newOmittedTriplesValue(array $omitted, array $coveredOmittedTriples): float
     {
-        $omitted = array_values(array_unique(array_map('intval', $omitted)));
-        sort($omitted);
-
         $value = 0.0;
         $count = count($omitted);
 
@@ -362,7 +388,7 @@ class FechamentoReducer
                     $key = $omitted[$i] . '-' . $omitted[$j] . '-' . $omitted[$k];
 
                     if (! isset($coveredOmittedTriples[$key])) {
-                        $value += 4.5;
+                        $value += 0.35;
                     }
                 }
             }
@@ -373,23 +399,17 @@ class FechamentoReducer
 
     protected function omittedBalanceValue(array $omitted, array $omittedFrequency): float
     {
-        if (empty($omitted)) {
-            return 0.0;
-        }
-
         $value = 0.0;
 
         foreach ($omitted as $number) {
             $frequency = (int) ($omittedFrequency[(int) $number] ?? 0);
 
             if ($frequency === 0) {
-                $value += 10.0;
+                $value += 2.5;
             } elseif ($frequency <= 2) {
-                $value += 5.0;
-            } elseif ($frequency <= 5) {
-                $value += 2.0;
-            } else {
-                $value -= min(12.0, ($frequency - 5) * 1.5);
+                $value += 1.0;
+            } elseif ($frequency > 8) {
+                $value -= min(2.5, ($frequency - 8) * 0.35);
             }
         }
 
@@ -427,15 +447,11 @@ class FechamentoReducer
             return 0.0;
         }
 
-        return ($totalDistance / $comparisons) * 22.0;
+        return ($totalDistance / $comparisons) * 5.0;
     }
 
     protected function omittedClonePenalty(array $omitted, array $selected): float
     {
-        if (empty($selected)) {
-            return 0.0;
-        }
-
         $penalty = 0.0;
         $omittedCount = count($omitted);
 
@@ -449,56 +465,70 @@ class FechamentoReducer
             $overlap = count(array_intersect($omitted, $selectedOmitted));
 
             if ($overlap === $omittedCount && $omittedCount > 0) {
-                $penalty += 180.0;
+                $penalty += 45.0;
                 continue;
             }
 
-            if ($omittedCount >= 3 && $overlap === 3) {
-                $penalty += 4.5;
-                continue;
-            }
-
-            if ($omittedCount >= 3 && $overlap === 2) {
-                $penalty += 1.2;
-                continue;
-            }
-
-            if ($overlap === 1) {
-                $penalty += 0.15;
+            if ($overlap >= max(2, $omittedCount - 1)) {
+                $penalty += 0.8;
             }
         }
 
         return $penalty;
     }
 
-    protected function elitePreservationBonus(array $candidate, array $selected): float
+    protected function elitePreservationBonus(array $candidate): float
     {
-        if (empty($selected)) {
-            return 0.0;
-        }
-
         $bonus = 0.0;
 
         $candidateScore = (float) ($candidate['normalized_score'] ?? 0.0);
         $eliteBonus = (float) ($candidate['elite_bonus'] ?? 0.0);
+        $survivalQuality = (float) ($candidate['survival_quality'] ?? 0.0);
 
-        if ($candidateScore >= 0.88) {
-            $bonus += 12.0;
+        if ($candidateScore >= 0.82) {
+            $bonus += 26.0;
         }
 
-        if ($candidateScore >= 0.93) {
-            $bonus += 18.0;
+        if ($candidateScore >= 0.88) {
+            $bonus += 52.0;
+        }
+
+        if ($candidateScore >= 0.92) {
+            $bonus += 95.0;
+        }
+
+        if ($candidateScore >= 0.96) {
+            $bonus += 155.0;
         }
 
         if ($eliteBonus >= 4.0) {
-            $bonus += 10.0;
+            $bonus += 24.0;
         }
 
         if ($eliteBonus >= 7.0) {
-            $bonus += 18.0;
+            $bonus += 46.0;
+        }
+
+        if ($survivalQuality >= 0.80) {
+            $bonus += 35.0;
         }
 
         return $bonus;
+    }
+
+    protected function finalRawScoreOrdering(array $selected): array
+    {
+        usort($selected, function (array $a, array $b): int {
+            $scoreComparison = ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
+
+            if ($scoreComparison !== 0) {
+                return $scoreComparison;
+            }
+
+            return ($b['normalized_score'] ?? 0) <=> ($a['normalized_score'] ?? 0);
+        });
+
+        return $selected;
     }
 
     protected function candidateKey(array $dezenas): string

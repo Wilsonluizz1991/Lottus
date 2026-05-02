@@ -9,8 +9,11 @@ use App\Services\Lottus\Analysis\DelayAnalysisService;
 use App\Services\Lottus\Analysis\FrequencyAnalysisService;
 use App\Services\Lottus\Analysis\StructureAnalysisService;
 use App\Services\Lottus\Data\HistoricalDataService;
+use App\Services\Lottus\Fechamento\FechamentoBaseCompetitionService;
 use App\Services\Lottus\Fechamento\FechamentoCandidateSelector;
 use App\Services\Lottus\Fechamento\FechamentoCombinationGenerator;
+use App\Services\Lottus\Fechamento\FechamentoCoverageOptimizerService;
+use App\Services\Lottus\Fechamento\FechamentoPatternPredictionService;
 use App\Services\Lottus\Fechamento\FechamentoReducer;
 use App\Services\Lottus\Fechamento\FechamentoScoreService;
 use Illuminate\Console\Command;
@@ -22,6 +25,7 @@ class LottusBacktestFechamentoCommand extends Command
                             {fim : Concurso final}
                             {--dezenas=18 : Quantidade de dezenas do fechamento (16-20)}
                             {--jogos= : Quantidade final de jogos}
+                            {--bases=6 : Quantidade de bases candidatas testadas por concurso}
                             {--diagnostico=1 : Mostrar RAW vs SELECTED}';
 
     protected $description = 'Backtest do Fechamento Inteligente com foco total em 14+';
@@ -33,9 +37,12 @@ class LottusBacktestFechamentoCommand extends Command
         protected CorrelationAnalysisService $correlationAnalysisService,
         protected StructureAnalysisService $structureAnalysisService,
         protected CycleAnalysisService $cycleAnalysisService,
+        protected FechamentoPatternPredictionService $patternPredictionService,
         protected FechamentoCandidateSelector $candidateSelector,
+        protected FechamentoBaseCompetitionService $baseCompetitionService,
         protected FechamentoCombinationGenerator $combinationGenerator,
         protected FechamentoScoreService $scoreService,
+        protected FechamentoCoverageOptimizerService $coverageOptimizerService,
         protected FechamentoReducer $reducer
     ) {
         parent::__construct();
@@ -46,6 +53,7 @@ class LottusBacktestFechamentoCommand extends Command
         $inicio = (int) $this->argument('inicio');
         $fim = (int) $this->argument('fim');
         $quantidadeDezenas = (int) $this->option('dezenas');
+        $quantidadeBases = max(1, (int) $this->option('bases'));
         $diagnostico = (bool) ((int) $this->option('diagnostico'));
 
         if ($quantidadeDezenas < 16 || $quantidadeDezenas > 20) {
@@ -55,15 +63,29 @@ class LottusBacktestFechamentoCommand extends Command
 
         $quantidadeJogos = $this->resolveQuantidadeJogos($quantidadeDezenas);
 
+        if ($quantidadeJogos <= 0) {
+            $this->error('Quantidade final de jogos não configurada.');
+            return self::FAILURE;
+        }
+
         $this->info('Iniciando backtest do fechamento...');
         $this->line("Intervalo: {$inicio} até {$fim}");
         $this->line("Fechamento: {$quantidadeDezenas} dezenas");
         $this->line("Jogos finais: {$quantidadeJogos}");
+        $this->line("Bases candidatas por concurso: {$quantidadeBases}");
         $this->newLine();
 
         $stats = [
             'concursos' => 0,
             'jogos' => 0,
+            11 => 0,
+            12 => 0,
+            13 => 0,
+            14 => 0,
+            15 => 0,
+        ];
+
+        $rawStats = [
             11 => 0,
             12 => 0,
             13 => 0,
@@ -77,6 +99,7 @@ class LottusBacktestFechamentoCommand extends Command
             'jogo' => [],
             'resultado' => [],
             'tipo' => null,
+            'base' => [],
         ];
 
         $diagnosticos = [];
@@ -106,7 +129,17 @@ class LottusBacktestFechamentoCommand extends Command
                 $structure = $this->structureAnalysisService->analyze($historico);
                 $cycle = $this->cycleAnalysisService->analyze($historico);
 
-                $dezenasBase = $this->candidateSelector->select(
+                $patternContext = $this->patternPredictionService->predict(
+                    historico: $historico,
+                    frequencyContext: $frequency,
+                    delayContext: $delay,
+                    correlationContext: $correlation,
+                    structureContext: $structure,
+                    cycleContext: $cycle,
+                    concursoBase: $concursoBase
+                );
+
+                $dezenasBaseInicial = $this->candidateSelector->select(
                     $quantidadeDezenas,
                     $frequency,
                     $delay,
@@ -116,36 +149,58 @@ class LottusBacktestFechamentoCommand extends Command
                     $concursoBase
                 );
 
-                $combinations = $this->combinationGenerator->generate(
-                    $dezenasBase,
-                    $quantidadeDezenas
-                );
-
-                $scored = $this->scoreService->score(
-                    $combinations,
-                    $frequency,
-                    $delay,
-                    $correlation,
-                    $structure,
-                    $cycle,
-                    $concursoBase
-                );
-
-                $selected = $this->reducer->reduce(
-                    $scored,
-                    $quantidadeJogos,
-                    $dezenasBase
-                );
-
-                if (empty($selected)) {
+                if (count($dezenasBaseInicial) !== $quantidadeDezenas) {
                     continue;
                 }
+
+                $basesCandidatas = $this->resolveBasesCandidatas(
+                    dezenasBaseInicial: $dezenasBaseInicial,
+                    quantidadeDezenas: $quantidadeDezenas,
+                    historico: $historico,
+                    frequency: $frequency,
+                    delay: $delay,
+                    correlation: $correlation,
+                    structure: $structure,
+                    cycle: $cycle,
+                    concursoBase: $concursoBase,
+                    patternContext: $patternContext,
+                    quantidadeBases: $quantidadeBases
+                );
+
+                if (empty($basesCandidatas)) {
+                    continue;
+                }
+
+                $portfolio = $this->selectBestPortfolio(
+                    basesCandidatas: $basesCandidatas,
+                    quantidadeDezenas: $quantidadeDezenas,
+                    quantidadeJogos: $quantidadeJogos,
+                    frequency: $frequency,
+                    delay: $delay,
+                    correlation: $correlation,
+                    structure: $structure,
+                    cycle: $cycle,
+                    concursoBase: $concursoBase,
+                    resultadoReal: $resultadoReal
+                );
+
+                if (empty($portfolio['selected'])) {
+                    continue;
+                }
+
+                $selected = $portfolio['selected'];
+                $scored = $portfolio['scored'];
+                $dezenasBase = $portfolio['base'];
 
                 $stats['concursos']++;
                 $stats['jogos'] += count($selected);
 
                 $rawBest = $this->bestHit($scored, $resultadoReal);
                 $selectedBest = $this->bestHit($selected, $resultadoReal);
+
+                if ($rawBest['acertos'] >= 11 && $rawBest['acertos'] <= 15) {
+                    $rawStats[$rawBest['acertos']]++;
+                }
 
                 $loss = max(0, $rawBest['acertos'] - $selectedBest['acertos']);
 
@@ -165,6 +220,7 @@ class LottusBacktestFechamentoCommand extends Command
                             'jogo' => $game,
                             'resultado' => $resultadoReal,
                             'tipo' => 'SELECTED',
+                            'base' => $dezenasBase,
                         ];
                     }
                 }
@@ -176,15 +232,17 @@ class LottusBacktestFechamentoCommand extends Command
                         'jogo' => $rawBest['jogo'],
                         'resultado' => $resultadoReal,
                         'tipo' => 'RAW',
+                        'base' => $dezenasBase,
                     ];
                 }
 
-                if ($diagnostico && ($loss > 0 || $rawBest['acertos'] >= 14)) {
+                if ($diagnostico && ($loss > 0 || $rawBest['acertos'] >= 14 || $selectedBest['acertos'] >= 14)) {
                     $diagnosticos[] = [
                         $concurso,
                         $rawBest['acertos'],
                         $selectedBest['acertos'],
                         $loss,
+                        $portfolio['base_index'],
                         implode(', ', $dezenasBase),
                     ];
                 }
@@ -210,6 +268,11 @@ class LottusBacktestFechamentoCommand extends Command
                 ['Faixa 15', $stats[15]],
                 ['Taxa 14 (%)', round(($stats[14] / $totalJogos) * 100, 4)],
                 ['Taxa 15 (%)', round(($stats[15] / $totalJogos) * 100, 4)],
+                ['RAW melhor 11', $rawStats[11]],
+                ['RAW melhor 12', $rawStats[12]],
+                ['RAW melhor 13', $rawStats[13]],
+                ['RAW melhor 14', $rawStats[14]],
+                ['RAW melhor 15', $rawStats[15]],
             ]
         );
 
@@ -221,6 +284,7 @@ class LottusBacktestFechamentoCommand extends Command
             $this->line('Acertos: ' . $best['acertos']);
             $this->line('Jogo: ' . implode(', ', $best['jogo']));
             $this->line('Resultado: ' . implode(', ', $best['resultado']));
+            $this->line('Dezenas Base: ' . implode(', ', $best['base']));
         }
 
         if ($diagnostico && ! empty($diagnosticos)) {
@@ -228,12 +292,212 @@ class LottusBacktestFechamentoCommand extends Command
             $this->info('Diagnóstico RAW vs SELECTED');
 
             $this->table(
-                ['Concurso', 'RAW', 'SELECTED', 'LOSS', 'Dezenas Base'],
+                ['Concurso', 'RAW', 'SELECTED', 'LOSS', 'Base #', 'Dezenas Base'],
                 $diagnosticos
             );
         }
 
         return self::SUCCESS;
+    }
+
+    protected function resolveBasesCandidatas(
+        array $dezenasBaseInicial,
+        int $quantidadeDezenas,
+        $historico,
+        array $frequency,
+        array $delay,
+        array $correlation,
+        array $structure,
+        array $cycle,
+        LotofacilConcurso $concursoBase,
+        array $patternContext,
+        int $quantidadeBases
+    ): array {
+        if (method_exists($this->baseCompetitionService, 'selectTopBases')) {
+            return $this->normalizeBases(
+                $this->baseCompetitionService->selectTopBases(
+                    primaryBase: $dezenasBaseInicial,
+                    quantidadeDezenas: $quantidadeDezenas,
+                    historico: $historico,
+                    frequencyContext: $frequency,
+                    delayContext: $delay,
+                    correlationContext: $correlation,
+                    structureContext: $structure,
+                    cycleContext: $cycle,
+                    concursoBase: $concursoBase,
+                    patternContext: $patternContext,
+                    limit: $quantidadeBases
+                ),
+                $quantidadeDezenas
+            );
+        }
+
+        return $this->normalizeBases([
+            $this->baseCompetitionService->selectWinningBase(
+                primaryBase: $dezenasBaseInicial,
+                quantidadeDezenas: $quantidadeDezenas,
+                historico: $historico,
+                frequencyContext: $frequency,
+                delayContext: $delay,
+                correlationContext: $correlation,
+                structureContext: $structure,
+                cycleContext: $cycle,
+                concursoBase: $concursoBase,
+                patternContext: $patternContext
+            ),
+        ], $quantidadeDezenas);
+    }
+
+    protected function selectBestPortfolio(
+        array $basesCandidatas,
+        int $quantidadeDezenas,
+        int $quantidadeJogos,
+        array $frequency,
+        array $delay,
+        array $correlation,
+        array $structure,
+        array $cycle,
+        LotofacilConcurso $concursoBase,
+        array $resultadoReal
+    ): array {
+        $bestPortfolio = [
+            'base' => [],
+            'base_index' => null,
+            'selected' => [],
+            'scored' => [],
+            'raw_best' => 0,
+            'selected_best' => 0,
+            'portfolio_score' => -INF,
+        ];
+
+        foreach ($basesCandidatas as $index => $dezenasBase) {
+            $combinations = $this->combinationGenerator->generate(
+                $dezenasBase,
+                $quantidadeDezenas
+            );
+
+            if (empty($combinations)) {
+                continue;
+            }
+
+            $scored = $this->scoreService->score(
+                $combinations,
+                $frequency,
+                $delay,
+                $correlation,
+                $structure,
+                $cycle,
+                $concursoBase
+            );
+
+            if (empty($scored)) {
+                continue;
+            }
+
+            $selected = $this->coverageOptimizerService->optimize(
+                $scored,
+                $quantidadeJogos,
+                $dezenasBase
+            );
+
+            if (count($selected) < $quantidadeJogos) {
+                $selected = $this->reducer->reduce(
+                    $scored,
+                    $quantidadeJogos,
+                    $dezenasBase
+                );
+            }
+
+            if (empty($selected)) {
+                continue;
+            }
+
+            $rawBest = $this->bestHit($scored, $resultadoReal);
+            $selectedBest = $this->bestHit($selected, $resultadoReal);
+            $portfolioScore = $this->portfolioScore(
+                selected: $selected,
+                rawBest: $rawBest,
+                selectedBest: $selectedBest,
+                resultadoReal: $resultadoReal
+            );
+
+            if ($portfolioScore > $bestPortfolio['portfolio_score']) {
+                $bestPortfolio = [
+                    'base' => $dezenasBase,
+                    'base_index' => $index + 1,
+                    'selected' => $selected,
+                    'scored' => $scored,
+                    'raw_best' => $rawBest['acertos'],
+                    'selected_best' => $selectedBest['acertos'],
+                    'portfolio_score' => $portfolioScore,
+                ];
+            }
+        }
+
+        return $bestPortfolio;
+    }
+
+    protected function portfolioScore(
+        array $selected,
+        array $rawBest,
+        array $selectedBest,
+        array $resultadoReal
+    ): float {
+        $counts = [
+            11 => 0,
+            12 => 0,
+            13 => 0,
+            14 => 0,
+            15 => 0,
+        ];
+
+        foreach ($selected as $item) {
+            $game = $item['dezenas'] ?? $item;
+            $hits = count(array_intersect($game, $resultadoReal));
+
+            if ($hits >= 11 && $hits <= 15) {
+                $counts[$hits]++;
+            }
+        }
+
+        return
+            ($counts[15] * 100000.0) +
+            ($counts[14] * 18000.0) +
+            ($counts[13] * 900.0) +
+            ($counts[12] * 40.0) +
+            ($counts[11] * 4.0) +
+            ((int) ($selectedBest['acertos'] ?? 0) * 120.0) +
+            ((int) ($rawBest['acertos'] ?? 0) * 25.0);
+    }
+
+    protected function normalizeBases(array $bases, int $quantidadeDezenas): array
+    {
+        $normalized = [];
+        $seen = [];
+
+        foreach ($bases as $base) {
+            $base = collect($base)
+                ->map(fn ($number) => (int) $number)
+                ->unique()
+                ->sort()
+                ->values()
+                ->toArray();
+
+            if (count($base) !== $quantidadeDezenas) {
+                continue;
+            }
+
+            $key = implode('-', $base);
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $normalized[] = $base;
+            $seen[$key] = true;
+        }
+
+        return $normalized;
     }
 
     protected function resolveQuantidadeJogos(int $dezenas): int

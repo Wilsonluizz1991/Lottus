@@ -32,197 +32,310 @@ class FechamentoCandidateSelector
             $lastDrawPresence = in_array($number, $lastDraw, true) ? 1.0 : 0.0;
             $cycleMissingPresence = in_array($number, $faltantes, true) ? 1.0 : 0.0;
 
+            $maturity = $this->maturityScore(
+                frequency: $frequency,
+                delay: $delay,
+                cycle: $cycle,
+                correlation: $correlation,
+                lastDrawPresence: $lastDrawPresence,
+                cycleMissingPresence: $cycleMissingPresence
+            );
+
+            $stability = $this->stabilityScore(
+                frequency: $frequency,
+                delay: $delay,
+                cycle: $cycle
+            );
+
+            $affinity = $this->affinityScore(
+                number: $number,
+                pairScores: $pairScores,
+                lastDraw: $lastDraw
+            );
+
+            $dynamicVariance = $this->dynamicContextVariance(
+                number: $number,
+                concursoBase: $concursoBase,
+                quantidadeDezenas: $quantidadeDezenas
+            );
+
             $score =
-                ($frequency * 0.31) +
-                ($delay * 0.25) +
-                ($cycle * 0.26) +
-                ($correlation * 0.10) +
-                ($lastDrawPresence * 0.08);
+                ($maturity * 0.48) +
+                ($stability * 0.22) +
+                ($affinity * 0.16) +
+                ($correlation * 0.08) +
+                ($lastDrawPresence * 0.04) +
+                ($cycleMissingPresence * 0.02) +
+                $dynamicVariance;
 
-            if ($cycleMissingPresence > 0) {
-                $score += 0.095;
-            }
-
-            if ($this->isEdge($number)) {
-                $score += 0.030;
-            }
-
-            if ($this->isCoreAnchor($number)) {
-                $score += 0.040;
-            }
-
-            if ($number >= 1 && $number <= 5) {
-                $score += 0.018;
-            }
-
-            if ($number >= 21 && $number <= 25) {
-                $score += 0.022;
-            }
+            $score -= $this->extremeBiasPenalty($frequency, $delay, $cycle);
 
             $numberScores[$number] = [
                 'number' => $number,
                 'score' => round($score, 8),
+                'maturity' => round($maturity, 8),
+                'stability' => round($stability, 8),
+                'affinity' => round($affinity, 8),
                 'frequency' => $frequency,
                 'delay' => $delay,
                 'cycle' => $cycle,
                 'correlation' => $correlation,
                 'last_draw_presence' => $lastDrawPresence,
                 'cycle_missing_presence' => $cycleMissingPresence,
+                'dynamic_variance' => $dynamicVariance,
+                'temperature' => $this->temperature($frequency, $delay, $cycle),
                 'line' => $this->line($number),
                 'zone' => $this->zone($number),
                 'is_edge' => $this->isEdge($number),
-                'is_core_anchor' => $this->isCoreAnchor($number),
             ];
         }
 
-        $selected = $this->selectByControlledExclusion(
+        $selected = $this->selectDynamicBase(
             quantidadeDezenas: $quantidadeDezenas,
             numberScores: $numberScores,
             lastDraw: $lastDraw,
-            faltantes: $faltantes
+            faltantes: $faltantes,
+            concursoBase: $concursoBase
         );
 
-        $selected = $this->rescueCriticalNumbers(
-            selected: $selected,
-            numberScores: $numberScores,
-            quantidadeDezenas: $quantidadeDezenas
-        );
+        if (count($selected) !== $quantidadeDezenas) {
+            $selected = $this->fallbackBalancedSelection($numberScores, $quantidadeDezenas);
+        }
 
         if (count($selected) !== $quantidadeDezenas) {
             $selected = $this->fallbackTopSelection($numberScores, $quantidadeDezenas);
         }
+
+        logger()->info('FECHAMENTO_DYNAMIC_SELECTOR', [
+            'concurso' => $concursoBase->concurso,
+            'quantidade_dezenas' => $quantidadeDezenas,
+            'selected' => $selected,
+            'profile' => $this->selectionProfile($selected, $numberScores),
+            'scores' => $numberScores,
+        ]);
 
         sort($selected);
 
         return $selected;
     }
 
-    protected function selectByControlledExclusion(
+    protected function selectDynamicBase(
         int $quantidadeDezenas,
         array $numberScores,
         array $lastDraw,
-        array $faltantes
+        array $faltantes,
+        LotofacilConcurso $concursoBase
     ): array {
-        $targetOmitted = 25 - $quantidadeDezenas;
-        $selected = range(1, 25);
-        $omitted = [];
+        $selected = [];
+        $ranked = array_values($numberScores);
 
-        $candidates = array_values($numberScores);
-
-        usort($candidates, function (array $a, array $b): int {
-            $riskA = $this->exclusionRisk($a);
-            $riskB = $this->exclusionRisk($b);
-
-            if ($riskA === $riskB) {
-                return $a['score'] <=> $b['score'];
+        usort($ranked, function (array $a, array $b): int {
+            if (($a['score'] ?? 0) === ($b['score'] ?? 0)) {
+                return ((int) $a['number']) <=> ((int) $b['number']);
             }
 
-            return $riskA <=> $riskB;
+            return ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
         });
 
-        foreach ($candidates as $candidate) {
-            if (count($omitted) >= $targetOmitted) {
-                break;
-            }
+        $quotas = $this->temperatureQuotas($quantidadeDezenas);
 
-            $number = (int) $candidate['number'];
+        foreach (['hot', 'neutral', 'cold'] as $temperature) {
+            $needed = $quotas[$temperature] ?? 0;
 
-            if (! $this->canOmitNumber(
-                number: $number,
-                selected: $selected,
-                omitted: $omitted,
-                targetOmitted: $targetOmitted,
-                lastDraw: $lastDraw,
-                faltantes: $faltantes,
-                candidate: $candidate
-            )) {
+            if ($needed <= 0) {
                 continue;
             }
 
-            $omitted[] = $number;
-            $selected = array_values(array_diff($selected, [$number]));
-        }
-
-        if (count($omitted) < $targetOmitted) {
-            foreach ($candidates as $candidate) {
-                if (count($omitted) >= $targetOmitted) {
-                    break;
-                }
-
-                $number = (int) $candidate['number'];
-
-                if (in_array($number, $omitted, true)) {
-                    continue;
-                }
-
-                if ($this->wouldBreakMinimumLineCoverage($number, $selected)) {
-                    continue;
-                }
-
-                if ($this->isCoreAnchor($number)) {
-                    continue;
-                }
-
-                $omitted[] = $number;
-                $selected = array_values(array_diff($selected, [$number]));
-            }
-        }
-
-        return array_values(array_unique(array_map('intval', $selected)));
-    }
-
-    protected function canOmitNumber(
-        int $number,
-        array $selected,
-        array $omitted,
-        int $targetOmitted,
-        array $lastDraw,
-        array $faltantes,
-        array $candidate
-    ): bool {
-        if (in_array($number, $omitted, true)) {
-            return false;
-        }
-
-        if ($this->wouldBreakMinimumLineCoverage($number, $selected)) {
-            return false;
-        }
-
-        if ($this->wouldOverOmitLine($number, $omitted)) {
-            return false;
-        }
-
-        if ($this->isCoreAnchor($number)) {
-            return false;
-        }
-
-        if (($candidate['score'] ?? 0) >= 0.58) {
-            return false;
-        }
-
-        if (in_array($number, $lastDraw, true)) {
-            $selectedLastDraw = count(array_intersect($selected, $lastDraw));
-
-            if ($selectedLastDraw <= 11) {
-                return false;
-            }
-        }
-
-        if (in_array($number, $faltantes, true)) {
-            $selectedFaltantes = count(array_intersect($selected, $faltantes));
-
-            if ($selectedFaltantes <= 4) {
-                return false;
-            }
-        }
-
-        if ($this->isEdge($number)) {
-            $selectedEdges = count(array_filter(
-                $selected,
-                fn ($item) => $this->isEdge((int) $item)
+            $bucket = array_values(array_filter(
+                $ranked,
+                fn (array $item) => ($item['temperature'] ?? 'neutral') === $temperature
             ));
 
-            if ($selectedEdges <= 12) {
+            $this->fillFromBucket(
+                selected: $selected,
+                bucket: $bucket,
+                needed: $needed,
+                quantidadeDezenas: $quantidadeDezenas,
+                numberScores: $numberScores
+            );
+        }
+
+        if (count($selected) < $quantidadeDezenas) {
+            $cycleBucket = array_values(array_filter(
+                $ranked,
+                fn (array $item) => in_array((int) $item['number'], $faltantes, true)
+            ));
+
+            $this->fillFromBucket(
+                selected: $selected,
+                bucket: $cycleBucket,
+                needed: min(2, $quantidadeDezenas - count($selected)),
+                quantidadeDezenas: $quantidadeDezenas,
+                numberScores: $numberScores
+            );
+        }
+
+        if (count($selected) < $quantidadeDezenas) {
+            $recentBucket = array_values(array_filter(
+                $ranked,
+                fn (array $item) => in_array((int) $item['number'], $lastDraw, true)
+            ));
+
+            $this->fillFromBucket(
+                selected: $selected,
+                bucket: $recentBucket,
+                needed: min(3, $quantidadeDezenas - count($selected)),
+                quantidadeDezenas: $quantidadeDezenas,
+                numberScores: $numberScores
+            );
+        }
+
+        if (count($selected) < $quantidadeDezenas) {
+            $rotated = $this->rotateRankedPool($ranked, $concursoBase, $quantidadeDezenas);
+
+            $this->fillFromBucket(
+                selected: $selected,
+                bucket: $rotated,
+                needed: $quantidadeDezenas - count($selected),
+                quantidadeDezenas: $quantidadeDezenas,
+                numberScores: $numberScores
+            );
+        }
+
+        $selected = $this->repairSelection(
+            selected: $selected,
+            numberScores: $numberScores,
+            quantidadeDezenas: $quantidadeDezenas,
+            ranked: $ranked
+        );
+
+        $selected = array_values(array_unique(array_map('intval', $selected)));
+        sort($selected);
+
+        return $selected;
+    }
+
+    protected function fillFromBucket(
+        array &$selected,
+        array $bucket,
+        int $needed,
+        int $quantidadeDezenas,
+        array $numberScores
+    ): void {
+        foreach ($bucket as $candidate) {
+            if ($needed <= 0 || count($selected) >= $quantidadeDezenas) {
+                break;
+            }
+
+            $number = (int) ($candidate['number'] ?? 0);
+
+            if ($number < 1 || $number > 25 || in_array($number, $selected, true)) {
+                continue;
+            }
+
+            $test = $selected;
+            $test[] = $number;
+            $test = array_values(array_unique(array_map('intval', $test)));
+            sort($test);
+
+            if (! $this->canAcceptNumber($test, $numberScores, $quantidadeDezenas)) {
+                continue;
+            }
+
+            $selected = $test;
+            $needed--;
+        }
+    }
+
+    protected function repairSelection(
+        array $selected,
+        array $numberScores,
+        int $quantidadeDezenas,
+        array $ranked
+    ): array {
+        $selected = array_values(array_unique(array_map('intval', $selected)));
+        sort($selected);
+
+        while (count($selected) > $quantidadeDezenas) {
+            $remove = $this->weakestSelectedNumber($selected, $numberScores);
+
+            if ($remove === null) {
+                break;
+            }
+
+            $selected = array_values(array_diff($selected, [$remove]));
+        }
+
+        while (count($selected) < $quantidadeDezenas) {
+            $added = false;
+
+            foreach ($ranked as $candidate) {
+                $number = (int) ($candidate['number'] ?? 0);
+
+                if (in_array($number, $selected, true)) {
+                    continue;
+                }
+
+                $test = $selected;
+                $test[] = $number;
+                $test = array_values(array_unique(array_map('intval', $test)));
+                sort($test);
+
+                if (! $this->canAcceptNumber($test, $numberScores, $quantidadeDezenas, true)) {
+                    continue;
+                }
+
+                $selected = $test;
+                $added = true;
+                break;
+            }
+
+            if (! $added) {
+                break;
+            }
+        }
+
+        return $selected;
+    }
+
+    protected function canAcceptNumber(
+        array $selected,
+        array $numberScores,
+        int $quantidadeDezenas,
+        bool $relaxed = false
+    ): bool {
+        $lineLimits = $this->lineLimits($quantidadeDezenas, $relaxed);
+        $zoneLimits = $this->zoneLimits($quantidadeDezenas, $relaxed);
+        $temperatureLimits = $this->temperatureLimits($quantidadeDezenas, $relaxed);
+
+        $lines = [];
+        $zones = [];
+        $temperatures = [];
+
+        foreach ($selected as $number) {
+            $line = $this->line((int) $number);
+            $zone = $this->zone((int) $number);
+            $temperature = $numberScores[(int) $number]['temperature'] ?? 'neutral';
+
+            $lines[$line] = ($lines[$line] ?? 0) + 1;
+            $zones[$zone] = ($zones[$zone] ?? 0) + 1;
+            $temperatures[$temperature] = ($temperatures[$temperature] ?? 0) + 1;
+        }
+
+        foreach ($lines as $line => $count) {
+            if ($count > ($lineLimits['max'][$line] ?? 5)) {
+                return false;
+            }
+        }
+
+        foreach ($zones as $zone => $count) {
+            if ($count > ($zoneLimits['max'][$zone] ?? 10)) {
+                return false;
+            }
+        }
+
+        foreach ($temperatures as $temperature => $count) {
+            if ($count > ($temperatureLimits['max'][$temperature] ?? $quantidadeDezenas)) {
                 return false;
             }
         }
@@ -230,162 +343,127 @@ class FechamentoCandidateSelector
         return true;
     }
 
-    protected function rescueCriticalNumbers(
-        array $selected,
-        array $numberScores,
-        int $quantidadeDezenas
-    ): array {
-        $selected = array_values(array_unique(array_map('intval', $selected)));
+    protected function fallbackBalancedSelection(array $numberScores, int $quantidadeDezenas): array
+    {
+        $ranked = array_values($numberScores);
 
-        $missing = array_filter(
-            $numberScores,
-            fn (array $item) => ! in_array($item['number'], $selected, true)
-        );
+        usort($ranked, fn (array $a, array $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
 
-        usort($missing, function (array $a, array $b): int {
-            $riskA = $this->exclusionRisk($a);
-            $riskB = $this->exclusionRisk($b);
+        $selected = [];
 
-            if ($riskA === $riskB) {
-                return $b['score'] <=> $a['score'];
+        foreach ($ranked as $candidate) {
+            if (count($selected) >= $quantidadeDezenas) {
+                break;
             }
 
-            return $riskB <=> $riskA;
-        });
-
-        foreach ($missing as $candidate) {
-            $number = (int) $candidate['number'];
-            $risk = $this->exclusionRisk($candidate);
-
-            if ($risk < 0.62 && ! $this->isCoreAnchor($number)) {
-                continue;
-            }
+            $number = (int) ($candidate['number'] ?? 0);
 
             if (in_array($number, $selected, true)) {
                 continue;
             }
 
-            $remove = $this->weakestRemovableNumber($selected, $numberScores);
-
-            if ($remove === null) {
-                continue;
-            }
-
-            $selected = array_values(array_diff($selected, [$remove]));
             $selected[] = $number;
-
-            if (count($selected) > $quantidadeDezenas) {
-                $selected = array_slice(array_values(array_unique($selected)), 0, $quantidadeDezenas);
-            }
         }
 
-        return array_values(array_unique(array_map('intval', $selected)));
-    }
+        sort($selected);
 
-    protected function weakestRemovableNumber(array $selected, array $numberScores): ?int
-    {
-        $candidates = array_filter(
-            $selected,
-            fn ($number) => ! $this->isCoreAnchor((int) $number)
-        );
-
-        if (empty($candidates)) {
-            return null;
-        }
-
-        usort($candidates, function (int $a, int $b) use ($numberScores): int {
-            $riskA = $this->exclusionRisk($numberScores[$a] ?? ['score' => 0]);
-            $riskB = $this->exclusionRisk($numberScores[$b] ?? ['score' => 0]);
-
-            if ($riskA === $riskB) {
-                return ($numberScores[$a]['score'] ?? 0) <=> ($numberScores[$b]['score'] ?? 0);
-            }
-
-            return $riskA <=> $riskB;
-        });
-
-        foreach ($candidates as $candidate) {
-            if (! $this->wouldBreakMinimumLineCoverage((int) $candidate, $selected)) {
-                return (int) $candidate;
-            }
-        }
-
-        return (int) ($candidates[0] ?? null);
-    }
-
-    protected function exclusionRisk(array $candidate): float
-    {
-        $risk = (float) ($candidate['score'] ?? 0.0);
-
-        if (($candidate['last_draw_presence'] ?? 0) > 0) {
-            $risk += 0.140;
-        }
-
-        if (($candidate['cycle_missing_presence'] ?? 0) > 0) {
-            $risk += 0.130;
-        }
-
-        if (($candidate['is_edge'] ?? false) === true) {
-            $risk += 0.085;
-        }
-
-        if (($candidate['is_core_anchor'] ?? false) === true) {
-            $risk += 0.160;
-        }
-
-        if (($candidate['frequency'] ?? 0) >= 0.52 && ($candidate['cycle'] ?? 0) >= 0.48) {
-            $risk += 0.095;
-        }
-
-        if (($candidate['delay'] ?? 0) >= 0.50 && ($candidate['cycle'] ?? 0) >= 0.46) {
-            $risk += 0.080;
-        }
-
-        if (($candidate['correlation'] ?? 0) >= 0.64) {
-            $risk += 0.045;
-        }
-
-        return round($risk, 8);
-    }
-
-    protected function wouldBreakMinimumLineCoverage(int $number, array $selected): bool
-    {
-        $line = $this->line($number);
-
-        $lineCount = count(array_filter(
-            $selected,
-            fn ($item) => $this->line((int) $item) === $line
-        ));
-
-        return $lineCount <= 3;
-    }
-
-    protected function wouldOverOmitLine(int $number, array $omitted): bool
-    {
-        $line = $this->line($number);
-
-        $omittedFromLine = count(array_filter(
-            $omitted,
-            fn ($item) => $this->line((int) $item) === $line
-        ));
-
-        return $omittedFromLine >= 2;
+        return $selected;
     }
 
     protected function fallbackTopSelection(array $numberScores, int $quantidadeDezenas): array
     {
-        $candidates = array_values($numberScores);
+        $ranked = array_values($numberScores);
 
-        usort($candidates, fn ($a, $b) => $b['score'] <=> $a['score']);
+        usort($ranked, fn (array $a, array $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
 
         $selected = array_map(
             fn (array $item) => (int) $item['number'],
-            array_slice($candidates, 0, $quantidadeDezenas)
+            array_slice($ranked, 0, $quantidadeDezenas)
         );
 
         sort($selected);
 
         return $selected;
+    }
+
+    protected function maturityScore(
+        float $frequency,
+        float $delay,
+        float $cycle,
+        float $correlation,
+        float $lastDrawPresence,
+        float $cycleMissingPresence
+    ): float {
+        return max(0.0, min(1.0,
+            ($frequency * 0.30) +
+            ($delay * 0.18) +
+            ($cycle * 0.22) +
+            ($correlation * 0.14) +
+            ($lastDrawPresence * 0.06) +
+            ($cycleMissingPresence * 0.10)
+        ));
+    }
+
+    protected function stabilityScore(float $frequency, float $delay, float $cycle): float
+    {
+        $frequencyStability = 1.0 - min(1.0, abs($frequency - 0.55) / 0.55);
+        $delayStability = 1.0 - min(1.0, abs($delay - 0.45) / 0.55);
+        $cycleStability = 1.0 - min(1.0, abs($cycle - 0.50) / 0.50);
+
+        return max(0.0, min(1.0,
+            ($frequencyStability * 0.42) +
+            ($delayStability * 0.28) +
+            ($cycleStability * 0.30)
+        ));
+    }
+
+    protected function affinityScore(int $number, array $pairScores, array $lastDraw): float
+    {
+        $total = 0.0;
+        $count = 0;
+
+        foreach ($lastDraw as $other) {
+            $other = (int) $other;
+
+            if ($other === $number) {
+                continue;
+            }
+
+            $total += (float) ($pairScores[$number][$other] ?? $pairScores[$other][$number] ?? 0.0);
+            $count++;
+        }
+
+        if ($count === 0) {
+            return 0.5;
+        }
+
+        return $this->sigmoid($total / $count);
+    }
+
+    protected function averageCorrelation(int $number, array $pairScores): float
+    {
+        $total = 0.0;
+        $count = 0;
+
+        foreach (range(1, 25) as $other) {
+            if ($other === $number) {
+                continue;
+            }
+
+            $total += (float) ($pairScores[$number][$other] ?? $pairScores[$other][$number] ?? 0.0);
+            $count++;
+        }
+
+        if ($count === 0) {
+            return 0.5;
+        }
+
+        return $this->sigmoid($total / $count);
+    }
+
+    protected function sigmoid(float $value): float
+    {
+        return 1.0 / (1.0 + exp(-$value));
     }
 
     protected function normalizeScores(array $scores): array
@@ -412,30 +490,169 @@ class FechamentoCandidateSelector
         return $normalized;
     }
 
-    protected function averageCorrelation(int $number, array $pairScores): float
-    {
-        $total = 0.0;
-        $count = 0;
+    protected function dynamicContextVariance(
+        int $number,
+        LotofacilConcurso $concursoBase,
+        int $quantidadeDezenas
+    ): float {
+        $seed = (((int) $concursoBase->concurso * 17) + ($number * 31) + ($quantidadeDezenas * 13)) % 100;
 
-        foreach (range(1, 25) as $other) {
-            if ($other === $number) {
-                continue;
-            }
-
-            $total += (float) ($pairScores[$number][$other] ?? $pairScores[$other][$number] ?? 0.0);
-            $count++;
-        }
-
-        if ($count === 0) {
-            return 0.0;
-        }
-
-        return $this->sigmoid($total / $count);
+        return match (true) {
+            $seed <= 8 => -0.018,
+            $seed <= 22 => -0.010,
+            $seed <= 68 => 0.0,
+            $seed <= 86 => 0.010,
+            default => 0.018,
+        };
     }
 
-    protected function sigmoid(float $value): float
+    protected function extremeBiasPenalty(float $frequency, float $delay, float $cycle): float
     {
-        return 1.0 / (1.0 + exp(-$value));
+        $penalty = 0.0;
+
+        if ($frequency >= 0.90 && $delay <= 0.10) {
+            $penalty += 0.035;
+        }
+
+        if ($frequency <= 0.08 && $delay >= 0.92) {
+            $penalty += 0.035;
+        }
+
+        if ($cycle <= 0.08 || $cycle >= 0.92) {
+            $penalty += 0.020;
+        }
+
+        return $penalty;
+    }
+
+    protected function temperature(float $frequency, float $delay, float $cycle): string
+    {
+        $temperatureScore = ($frequency * 0.55) + ((1.0 - $delay) * 0.25) + ($cycle * 0.20);
+
+        if ($temperatureScore >= 0.66) {
+            return 'hot';
+        }
+
+        if ($temperatureScore <= 0.38) {
+            return 'cold';
+        }
+
+        return 'neutral';
+    }
+
+    protected function temperatureQuotas(int $quantidadeDezenas): array
+    {
+        return match ($quantidadeDezenas) {
+            16 => ['hot' => 6, 'neutral' => 7, 'cold' => 3],
+            17 => ['hot' => 7, 'neutral' => 7, 'cold' => 3],
+            18 => ['hot' => 7, 'neutral' => 8, 'cold' => 3],
+            19 => ['hot' => 8, 'neutral' => 8, 'cold' => 3],
+            20 => ['hot' => 8, 'neutral' => 9, 'cold' => 3],
+            default => ['hot' => 7, 'neutral' => 8, 'cold' => 3],
+        };
+    }
+
+    protected function lineLimits(int $quantidadeDezenas, bool $relaxed = false): array
+    {
+        $max = match ($quantidadeDezenas) {
+            16 => 4,
+            17 => 5,
+            18 => 5,
+            19 => 5,
+            20 => 5,
+            default => 5,
+        };
+
+        if ($relaxed) {
+            $max++;
+        }
+
+        return [
+            'max' => [1 => $max, 2 => $max, 3 => $max, 4 => $max, 5 => $max],
+        ];
+    }
+
+    protected function zoneLimits(int $quantidadeDezenas, bool $relaxed = false): array
+    {
+        $extra = $relaxed ? 1 : 0;
+
+        return match ($quantidadeDezenas) {
+            16 => ['max' => [1 => 7 + $extra, 2 => 8 + $extra, 3 => 7 + $extra]],
+            17 => ['max' => [1 => 7 + $extra, 2 => 8 + $extra, 3 => 7 + $extra]],
+            18 => ['max' => [1 => 8 + $extra, 2 => 9 + $extra, 3 => 8 + $extra]],
+            19 => ['max' => [1 => 8 + $extra, 2 => 9 + $extra, 3 => 8 + $extra]],
+            20 => ['max' => [1 => 9 + $extra, 2 => 10 + $extra, 3 => 9 + $extra]],
+            default => ['max' => [1 => 8 + $extra, 2 => 9 + $extra, 3 => 8 + $extra]],
+        };
+    }
+
+    protected function temperatureLimits(int $quantidadeDezenas, bool $relaxed = false): array
+    {
+        $extra = $relaxed ? 1 : 0;
+
+        return match ($quantidadeDezenas) {
+            16 => ['max' => ['hot' => 8 + $extra, 'neutral' => 10 + $extra, 'cold' => 5 + $extra]],
+            17 => ['max' => ['hot' => 9 + $extra, 'neutral' => 10 + $extra, 'cold' => 5 + $extra]],
+            18 => ['max' => ['hot' => 9 + $extra, 'neutral' => 11 + $extra, 'cold' => 6 + $extra]],
+            19 => ['max' => ['hot' => 10 + $extra, 'neutral' => 11 + $extra, 'cold' => 6 + $extra]],
+            20 => ['max' => ['hot' => 10 + $extra, 'neutral' => 12 + $extra, 'cold' => 7 + $extra]],
+            default => ['max' => ['hot' => 9 + $extra, 'neutral' => 11 + $extra, 'cold' => 6 + $extra]],
+        };
+    }
+
+    protected function rotateRankedPool(array $ranked, LotofacilConcurso $concursoBase, int $quantidadeDezenas): array
+    {
+        if (empty($ranked)) {
+            return [];
+        }
+
+        $top = array_slice($ranked, 0, min(12, count($ranked)));
+        $rest = array_slice($ranked, count($top));
+
+        if (empty($rest)) {
+            return $top;
+        }
+
+        $rotation = ((int) $concursoBase->concurso + ($quantidadeDezenas * 3)) % count($rest);
+        $rest = array_merge(array_slice($rest, $rotation), array_slice($rest, 0, $rotation));
+
+        return array_merge($top, $rest);
+    }
+
+    protected function weakestSelectedNumber(array $selected, array $numberScores): ?int
+    {
+        if (empty($selected)) {
+            return null;
+        }
+
+        usort($selected, function (int $a, int $b) use ($numberScores): int {
+            return ($numberScores[$a]['score'] ?? 0.0) <=> ($numberScores[$b]['score'] ?? 0.0);
+        });
+
+        return (int) $selected[0];
+    }
+
+    protected function selectionProfile(array $selected, array $numberScores): array
+    {
+        $profile = [
+            'hot' => 0,
+            'neutral' => 0,
+            'cold' => 0,
+            'lines' => [],
+            'zones' => [],
+        ];
+
+        foreach ($selected as $number) {
+            $temperature = $numberScores[(int) $number]['temperature'] ?? 'neutral';
+            $line = $this->line((int) $number);
+            $zone = $this->zone((int) $number);
+
+            $profile[$temperature]++;
+            $profile['lines'][$line] = ($profile['lines'][$line] ?? 0) + 1;
+            $profile['zones'][$zone] = ($profile['zones'][$zone] ?? 0) + 1;
+        }
+
+        return $profile;
     }
 
     protected function line(int $number): int
@@ -464,17 +681,6 @@ class FechamentoCandidateSelector
             11, 15,
             16, 20,
             21, 22, 23, 24, 25,
-        ], true);
-    }
-
-    protected function isCoreAnchor(int $number): bool
-    {
-        return in_array($number, [
-            1, 2, 5,
-            6, 9, 10,
-            11, 12, 13, 14, 15,
-            16, 17, 20,
-            21, 22, 24, 25,
         ], true);
     }
 
