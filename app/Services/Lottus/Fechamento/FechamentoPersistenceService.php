@@ -21,28 +21,27 @@ class FechamentoPersistenceService
         int $quantidadeDezenas,
         array $dezenasBase,
         array $jogos,
-        ?string $cupom = null
+        ?string $cupom = null,
+        ?string $commercialSeed = null
     ): array {
         $dezenasBase = array_values(array_unique(array_map('intval', $dezenasBase)));
         sort($dezenasBase);
 
-        $jogosNormalizados = [];
-
-        foreach ($jogos as $jogo) {
-            $dezenas = $jogo['dezenas'] ?? $jogo;
-
-            $dezenas = array_values(array_unique(array_map('intval', $dezenas)));
-            sort($dezenas);
-
-            if (count($dezenas) !== 15) {
-                continue;
-            }
-
-            $jogosNormalizados[] = $dezenas;
-        }
+        $jogosNormalizados = $this->normalizePortfolioGames($jogos);
 
         if (empty($jogosNormalizados)) {
             throw new \Exception('Nenhum jogo válido foi encontrado para persistir o fechamento.');
+        }
+
+        $portfolioFingerprint = $this->portfolioFingerprint($jogosNormalizados);
+
+        if ($this->hasIdenticalCommercialPortfolio(
+            concursoBase: $concursoBase,
+            quantidadeDezenas: $quantidadeDezenas,
+            quantidadeJogos: count($jogosNormalizados),
+            portfolioFingerprint: $portfolioFingerprint
+        )) {
+            throw new \Exception('Bloqueio anti-duplicidade: este fechamento é idêntico a um fechamento já existente. Gere novamente.');
         }
 
         $tokenLote = (string) Str::uuid();
@@ -94,6 +93,8 @@ class FechamentoPersistenceService
                 'produto' => config('lottus_fechamento.product.name', 'Fechamento Inteligente Lottus'),
                 'engine_version' => config('lottus_fechamento.product.engine_version', 'fechamento-v1'),
                 'token_lote' => $tokenLote,
+                'portfolio_fingerprint' => $portfolioFingerprint,
+                'commercial_seed_hash' => $commercialSeed ? hash('sha256', $commercialSeed) : null,
                 'quantidade_dezenas' => $quantidadeDezenas,
                 'dezenas_base' => $dezenasBase,
                 'quantidade_jogos' => count($jogosNormalizados),
@@ -151,11 +152,81 @@ class FechamentoPersistenceService
             'quantidade_dezenas' => $quantidadeDezenas,
             'dezenas_base' => $dezenasBase,
             'quantidade_jogos' => count($jogosNormalizados),
+            'portfolio_fingerprint' => $portfolioFingerprint,
             'valor' => $valorFinal,
             'valor_original' => $valorOriginal,
             'desconto' => $desconto,
             'cupom' => $cupomAplicado,
             'jogos' => $jogosNormalizados,
         ];
+    }
+
+    public function hasIdenticalCommercialPortfolio(
+        LotofacilConcurso $concursoBase,
+        int $quantidadeDezenas,
+        int $quantidadeJogos,
+        string $portfolioFingerprint
+    ): bool {
+        $recentPedidos = LottusPedido::query()
+            ->where('concurso_base_id', $concursoBase->id)
+            ->where('quantidade', $quantidadeJogos)
+            ->latest('id')
+            ->limit((int) config('lottus_fechamento.commercial_duplicate_scan_limit', 500))
+            ->get(['id', 'jogo', 'analise']);
+
+        foreach ($recentPedidos as $pedido) {
+            $analise = is_array($pedido->analise) ? $pedido->analise : [];
+
+            if (($analise['tipo'] ?? null) !== 'fechamento_inteligente') {
+                continue;
+            }
+
+            if ((int) ($analise['quantidade_dezenas'] ?? 0) !== $quantidadeDezenas) {
+                continue;
+            }
+
+            if (($analise['portfolio_fingerprint'] ?? null) === $portfolioFingerprint) {
+                return true;
+            }
+
+            if ($this->portfolioFingerprint((array) $pedido->jogo) === $portfolioFingerprint) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function portfolioFingerprint(array $jogos): string
+    {
+        $keys = [];
+
+        foreach ($this->normalizePortfolioGames($jogos) as $jogo) {
+            $keys[] = implode('-', $jogo);
+        }
+
+        sort($keys);
+
+        return hash('sha256', implode('|', $keys));
+    }
+
+    private function normalizePortfolioGames(array $jogos): array
+    {
+        $jogosNormalizados = [];
+
+        foreach ($jogos as $jogo) {
+            $dezenas = $jogo['dezenas'] ?? $jogo;
+
+            $dezenas = array_values(array_unique(array_map('intval', (array) $dezenas)));
+            sort($dezenas);
+
+            if (count($dezenas) !== 15) {
+                continue;
+            }
+
+            $jogosNormalizados[] = $dezenas;
+        }
+
+        return $jogosNormalizados;
     }
 }
