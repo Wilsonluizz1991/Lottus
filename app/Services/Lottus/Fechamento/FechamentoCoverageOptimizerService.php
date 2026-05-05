@@ -31,14 +31,15 @@ class FechamentoCoverageOptimizerService
         usort($pool, fn (array $a, array $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
 
         $pool = $this->prepareNormalizedScore($pool);
+        $pool = $this->attachRawRank($pool);
 
-        $windowSize = min(
-            count($pool),
-            max($quantidadeJogos * $this->windowMultiplier($quantidadeOmitidas), $this->minimumWindowSize($quantidadeOmitidas))
-        );
-
-        $workingPool = array_slice($pool, 0, $windowSize);
         $numberProfiles = $this->normalizeNumberProfiles($numberScores);
+
+        $workingPool = $this->workingPool(
+            pool: $pool,
+            quantidadeJogos: $quantidadeJogos,
+            quantidadeOmitidas: $quantidadeOmitidas
+        );
 
         $omissionModel = $this->buildAdaptiveOmissionModel(
             workingPool: $workingPool,
@@ -47,13 +48,9 @@ class FechamentoCoverageOptimizerService
             numberProfiles: $numberProfiles
         );
 
-        $selected = [];
-        $seen = [];
-        $coverage = $this->emptyCoverageState($dezenasBase);
-
         $ranked = [];
 
-        foreach ($workingPool as $candidate) {
+        foreach ($pool as $candidate) {
             $candidate['_adaptive_omission_score'] = $this->adaptiveOmissionPortfolioValue(
                 candidate: $candidate,
                 omissionModel: $omissionModel,
@@ -61,37 +58,283 @@ class FechamentoCoverageOptimizerService
                 quantidadeOmitidas: $quantidadeOmitidas
             );
 
+            $candidate['_rank_protection_score'] = $this->rankProtectionScore($candidate, $quantidadeOmitidas);
+            $candidate['_is_rank_protected'] = $this->isRankProtectedCandidate($candidate, $quantidadeOmitidas);
+
             $ranked[] = $candidate;
         }
 
         usort($ranked, function (array $a, array $b): int {
-            if (($a['_adaptive_omission_score'] ?? 0) === ($b['_adaptive_omission_score'] ?? 0)) {
-                return ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
+            $aProtected = ! empty($a['_is_rank_protected']);
+            $bProtected = ! empty($b['_is_rank_protected']);
+
+            if ($aProtected !== $bProtected) {
+                return $aProtected ? -1 : 1;
             }
 
-            return ($b['_adaptive_omission_score'] ?? 0) <=> ($a['_adaptive_omission_score'] ?? 0);
+            if (($a['_rank_protection_score'] ?? 0.0) !== ($b['_rank_protection_score'] ?? 0.0)) {
+                return ($b['_rank_protection_score'] ?? 0.0) <=> ($a['_rank_protection_score'] ?? 0.0);
+            }
+
+            if (($a['score'] ?? 0.0) !== ($b['score'] ?? 0.0)) {
+                return ($b['score'] ?? 0.0) <=> ($a['score'] ?? 0.0);
+            }
+
+            return ($b['normalized_score'] ?? 0.0) <=> ($a['normalized_score'] ?? 0.0);
         });
 
-        $eliteLockCount = min(
-            count($ranked),
-            max(
-                $this->minimumEliteLock($quantidadeOmitidas),
-                (int) floor($quantidadeJogos * $this->eliteLockRatio($quantidadeOmitidas))
-            )
+        $selected = $this->selectRankProtectedCore(
+            ranked: $ranked,
+            quantidadeJogos: $quantidadeJogos,
+            quantidadeOmitidas: $quantidadeOmitidas
         );
 
-        foreach (array_slice($ranked, 0, $eliteLockCount) as $candidate) {
-            $this->addCandidate(
-                selected: $selected,
-                seen: $seen,
-                coverage: $coverage,
-                candidate: $candidate
-            );
+        $selected = $this->selectProtectedRawCore(
+            ranked: $ranked,
+            selected: $selected,
+            quantidadeJogos: $quantidadeJogos,
+            quantidadeOmitidas: $quantidadeOmitidas
+        );
 
-            if (count($selected) >= $quantidadeJogos) {
+        $selected = $this->selectWithDiversity(
+            ranked: $ranked,
+            selected: $selected,
+            quantidadeJogos: $quantidadeJogos,
+            quantidadeOmitidas: $quantidadeOmitidas,
+            omissionModel: $omissionModel
+        );
+
+        if (count($selected) < $quantidadeJogos) {
+            $selected = $this->selectWithRelaxedDiversity(
+                ranked: $ranked,
+                selected: $selected,
+                quantidadeJogos: $quantidadeJogos,
+                quantidadeOmitidas: $quantidadeOmitidas
+            );
+        }
+
+        if (count($selected) < $quantidadeJogos) {
+            return [];
+        }
+
+        foreach ($selected as $index => &$candidate) {
+            $candidate['portfolio_order'] = $index + 1;
+            $candidate['coverage_optimized'] = true;
+            $candidate['adaptive_omission_optimized'] = true;
+            $candidate['diversity_optimized'] = true;
+            $candidate['raw_preservation_optimized'] = true;
+            $candidate['rank_protection_optimized'] = true;
+            $candidate['quantidade_omitidas'] = $quantidadeOmitidas;
+
+            unset($candidate['_adaptive_omission_score']);
+            unset($candidate['_portfolio_choice_score']);
+            unset($candidate['_raw_protected_order']);
+            unset($candidate['_rank_protection_score']);
+            unset($candidate['_is_rank_protected']);
+        }
+
+        unset($candidate);
+
+        usort($selected, function (array $a, array $b): int {
+            $aProtected = ! empty($a['rank_protected']) || ! empty($a['raw_survivor_priority']) || ! empty($a['raw_elite_protected']);
+            $bProtected = ! empty($b['rank_protected']) || ! empty($b['raw_survivor_priority']) || ! empty($b['raw_elite_protected']);
+
+            if ($aProtected !== $bProtected) {
+                return $aProtected ? -1 : 1;
+            }
+
+            $rankComparison = ((int) ($a['raw_rank'] ?? PHP_INT_MAX)) <=> ((int) ($b['raw_rank'] ?? PHP_INT_MAX));
+
+            if ($rankComparison !== 0) {
+                return $rankComparison;
+            }
+
+            $scoreComparison = ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
+
+            if ($scoreComparison !== 0) {
+                return $scoreComparison;
+            }
+
+            return ($b['normalized_score'] ?? 0) <=> ($a['normalized_score'] ?? 0);
+        });
+
+        return array_slice($selected, 0, $quantidadeJogos);
+    }
+
+    protected function workingPool(array $pool, int $quantidadeJogos, int $quantidadeOmitidas): array
+    {
+        $windowSize = min(
+            count($pool),
+            max($quantidadeJogos * $this->windowMultiplier($quantidadeOmitidas), $this->minimumWindowSize($quantidadeOmitidas))
+        );
+
+        if ($quantidadeOmitidas >= 4) {
+            return $pool;
+        }
+
+        return array_slice($pool, 0, $windowSize);
+    }
+
+    protected function attachRawRank(array $pool): array
+    {
+        foreach ($pool as $index => &$candidate) {
+            $candidate['raw_rank'] = $index + 1;
+        }
+
+        unset($candidate);
+
+        return $pool;
+    }
+
+    protected function selectRankProtectedCore(
+        array $ranked,
+        int $quantidadeJogos,
+        int $quantidadeOmitidas
+    ): array {
+        $selected = [];
+        $seen = [];
+        $limit = $this->rankProtectedCoreCount($quantidadeJogos, $quantidadeOmitidas);
+
+        $protected = array_values(array_filter(
+            $ranked,
+            fn (array $candidate): bool => ! empty($candidate['_is_rank_protected'])
+        ));
+
+        usort($protected, function (array $a, array $b): int {
+            $rankComparison = ((int) ($a['raw_rank'] ?? PHP_INT_MAX)) <=> ((int) ($b['raw_rank'] ?? PHP_INT_MAX));
+
+            if ($rankComparison !== 0) {
+                return $rankComparison;
+            }
+
+            if (($a['_rank_protection_score'] ?? 0.0) !== ($b['_rank_protection_score'] ?? 0.0)) {
+                return ($b['_rank_protection_score'] ?? 0.0) <=> ($a['_rank_protection_score'] ?? 0.0);
+            }
+
+            return ($b['score'] ?? 0.0) <=> ($a['score'] ?? 0.0);
+        });
+
+        foreach ($protected as $candidate) {
+            if (count($selected) >= $limit) {
                 break;
             }
+
+            $key = $this->candidateKey($candidate['dezenas'] ?? []);
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            if (! $this->respectsRankProtectedDistance($candidate, $selected, $quantidadeOmitidas)) {
+                continue;
+            }
+
+            $candidate['rank_protected'] = true;
+            $candidate['raw_survivor_priority'] = true;
+
+            $selected[] = $candidate;
+            $seen[$key] = true;
         }
+
+        return $selected;
+    }
+
+    protected function selectProtectedRawCore(
+        array $ranked,
+        array $selected,
+        int $quantidadeJogos,
+        int $quantidadeOmitidas
+    ): array {
+        $seen = [];
+
+        foreach ($selected as $candidate) {
+            $seen[$this->candidateKey($candidate['dezenas'] ?? [])] = true;
+        }
+
+        $rawSorted = $ranked;
+
+        usort($rawSorted, function (array $a, array $b): int {
+            $rankComparison = ((int) ($a['raw_rank'] ?? PHP_INT_MAX)) <=> ((int) ($b['raw_rank'] ?? PHP_INT_MAX));
+
+            if ($rankComparison !== 0) {
+                return $rankComparison;
+            }
+
+            $scoreComparison = ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
+
+            if ($scoreComparison !== 0) {
+                return $scoreComparison;
+            }
+
+            return ($b['normalized_score'] ?? 0) <=> ($a['normalized_score'] ?? 0);
+        });
+
+        $protectedCount = $this->protectedRawCoreCount($quantidadeJogos, $quantidadeOmitidas);
+        $maxProtectedIntersection = $this->protectedRawMaxIntersection($quantidadeOmitidas);
+
+        foreach ($rawSorted as $candidate) {
+            if (count($selected) >= $protectedCount) {
+                break;
+            }
+
+            $key = $this->candidateKey($candidate['dezenas'] ?? []);
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            if (! $this->isEliteRawCandidate($candidate) && ! $this->isRankProtectedCandidate($candidate, $quantidadeOmitidas) && count($selected) >= max(1, (int) floor($protectedCount * 0.55))) {
+                continue;
+            }
+
+            if (! $this->respectsProtectedRawDistance(
+                candidate: $candidate,
+                selected: $selected,
+                maxIntersection: $maxProtectedIntersection,
+                quantidadeOmitidas: $quantidadeOmitidas
+            )) {
+                continue;
+            }
+
+            $candidate['raw_elite_protected'] = true;
+            $candidate['raw_survivor_priority'] = true;
+            $candidate['_raw_protected_order'] = count($selected) + 1;
+
+            $selected[] = $candidate;
+            $seen[$key] = true;
+        }
+
+        if (empty($selected) && ! empty($rawSorted)) {
+            $candidate = $rawSorted[0];
+            $candidate['raw_elite_protected'] = true;
+            $candidate['raw_survivor_priority'] = true;
+            $candidate['_raw_protected_order'] = 1;
+            $selected[] = $candidate;
+        }
+
+        return $selected;
+    }
+
+    protected function selectWithDiversity(
+        array $ranked,
+        array $selected,
+        int $quantidadeJogos,
+        int $quantidadeOmitidas,
+        array $omissionModel
+    ): array {
+        $seen = [];
+        $coverage = [];
+
+        foreach ($selected as $candidate) {
+            $seen[$this->candidateKey($candidate['dezenas'] ?? [])] = true;
+
+            foreach ($this->normalizeNumbers($candidate['omitted_dezenas'] ?? []) as $number) {
+                $coverage[$number] = ($coverage[$number] ?? 0) + 1;
+            }
+        }
+
+        $strictMaxIntersection = $this->strictMaxIntersection($quantidadeOmitidas);
+        $commercialMaxIntersection = $this->commercialMaxIntersection($quantidadeOmitidas);
 
         foreach ($ranked as $candidate) {
             if (count($selected) >= $quantidadeJogos) {
@@ -114,6 +357,23 @@ class FechamentoCoverageOptimizerService
                 continue;
             }
 
+            if (! $this->respectsInternalDistance(
+                candidate: $candidate,
+                selected: $selected,
+                maxIntersection: $strictMaxIntersection,
+                quantidadeOmitidas: $quantidadeOmitidas,
+                quantidadeJogos: $quantidadeJogos
+            )) {
+                continue;
+            }
+
+            $candidate['_portfolio_choice_score'] = $this->portfolioChoiceScore(
+                candidate: $candidate,
+                selected: $selected,
+                coverage: $coverage,
+                quantidadeOmitidas: $quantidadeOmitidas
+            );
+
             $this->addCandidate(
                 selected: $selected,
                 seen: $seen,
@@ -122,47 +382,121 @@ class FechamentoCoverageOptimizerService
             );
         }
 
-        if (count($selected) < $quantidadeJogos) {
-            foreach ($ranked as $candidate) {
-                if (count($selected) >= $quantidadeJogos) {
-                    break;
-                }
+        if (count($selected) >= $quantidadeJogos) {
+            return $selected;
+        }
 
-                $this->addCandidate(
-                    selected: $selected,
-                    seen: $seen,
-                    coverage: $coverage,
-                    candidate: $candidate
-                );
+        foreach ($ranked as $candidate) {
+            if (count($selected) >= $quantidadeJogos) {
+                break;
+            }
+
+            $key = $this->candidateKey($candidate['dezenas'] ?? []);
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            if (! $this->respectsInternalDistance(
+                candidate: $candidate,
+                selected: $selected,
+                maxIntersection: $commercialMaxIntersection,
+                quantidadeOmitidas: $quantidadeOmitidas,
+                quantidadeJogos: $quantidadeJogos
+            )) {
+                continue;
+            }
+
+            $candidate['_portfolio_choice_score'] = $this->portfolioChoiceScore(
+                candidate: $candidate,
+                selected: $selected,
+                coverage: $coverage,
+                quantidadeOmitidas: $quantidadeOmitidas
+            );
+
+            $this->addCandidate(
+                selected: $selected,
+                seen: $seen,
+                coverage: $coverage,
+                candidate: $candidate
+            );
+        }
+
+        return $selected;
+    }
+
+    protected function selectWithRelaxedDiversity(
+        array $ranked,
+        array $selected,
+        int $quantidadeJogos,
+        int $quantidadeOmitidas
+    ): array {
+        $seen = [];
+        $coverage = [];
+
+        foreach ($selected as $candidate) {
+            $seen[$this->candidateKey($candidate['dezenas'] ?? [])] = true;
+
+            foreach ($this->normalizeNumbers($candidate['omitted_dezenas'] ?? []) as $number) {
+                $coverage[$number] = ($coverage[$number] ?? 0) + 1;
             }
         }
 
-        if (count($selected) < $quantidadeJogos) {
-            return [];
-        }
-
-        foreach ($selected as $index => &$candidate) {
-            $candidate['portfolio_order'] = $index + 1;
-            $candidate['coverage_optimized'] = true;
-            $candidate['adaptive_omission_optimized'] = true;
-            $candidate['quantidade_omitidas'] = $quantidadeOmitidas;
-
-            unset($candidate['_adaptive_omission_score']);
-        }
-
-        unset($candidate);
-
-        usort($selected, function (array $a, array $b): int {
-            $scoreComparison = ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
-
-            if ($scoreComparison !== 0) {
-                return $scoreComparison;
+        foreach ($ranked as $candidate) {
+            if (count($selected) >= $quantidadeJogos) {
+                break;
             }
 
-            return ($b['normalized_score'] ?? 0) <=> ($a['normalized_score'] ?? 0);
-        });
+            $key = $this->candidateKey($candidate['dezenas'] ?? []);
 
-        return array_slice($selected, 0, $quantidadeJogos);
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            if (! $this->respectsEmergencyDistance(
+                candidate: $candidate,
+                selected: $selected,
+                quantidadeOmitidas: $quantidadeOmitidas,
+                quantidadeJogos: $quantidadeJogos
+            )) {
+                continue;
+            }
+
+            $candidate['_portfolio_choice_score'] = $this->portfolioChoiceScore(
+                candidate: $candidate,
+                selected: $selected,
+                coverage: $coverage,
+                quantidadeOmitidas: $quantidadeOmitidas
+            );
+
+            $this->addCandidate(
+                selected: $selected,
+                seen: $seen,
+                coverage: $coverage,
+                candidate: $candidate
+            );
+        }
+
+        foreach ($ranked as $candidate) {
+            if (count($selected) >= $quantidadeJogos) {
+                break;
+            }
+
+            $key = $this->candidateKey($candidate['dezenas'] ?? []);
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $this->addCandidate(
+                selected: $selected,
+                seen: $seen,
+                coverage: $coverage,
+                candidate: $candidate
+            );
+        }
+
+        return $selected;
     }
 
     protected function normalizePool(array $scoredCombinations, array $dezenasBase): array
@@ -303,62 +637,33 @@ class FechamentoCoverageOptimizerService
             $persistence = (float) ($profile['persistence'] ?? 0.5);
 
             $keepScore =
-                (($numberKeepFrequency[$number] ?? 0.0) * 0.56) +
-                ($strength * 0.16) +
-                ($maturity * 0.10) +
-                ($affinity * 0.10) +
-                ($returnPressure * 0.05) +
-                ($persistence * 0.03);
+                (($numberKeepFrequency[$number] ?? 0.0) * 0.34) +
+                ($strength * 0.24) +
+                ($maturity * 0.16) +
+                ($affinity * 0.14) +
+                ($persistence * 0.12);
 
             $omitScore =
-                (($numberOmitFrequency[$number] ?? 0.0) * 0.50) +
+                (($numberOmitFrequency[$number] ?? 0.0) * 0.34) +
                 ((1.0 - $strength) * 0.18) +
-                ((1.0 - $maturity) * 0.10) +
-                ((1.0 - $affinity) * 0.10) +
-                ((1.0 - $returnPressure) * 0.07) +
-                ((1.0 - $persistence) * 0.05);
+                ((1.0 - $maturity) * 0.16) +
+                ($returnPressure * 0.20) +
+                ((1.0 - $persistence) * 0.12);
 
-            $rankedKeepNumbers[] = [
-                'number' => $number,
-                'score' => $keepScore,
-            ];
-
-            $rankedOmitNumbers[] = [
-                'number' => $number,
-                'score' => $omitScore,
-            ];
+            $rankedKeepNumbers[$number] = $keepScore;
+            $rankedOmitNumbers[$number] = $omitScore;
         }
 
-        usort($rankedKeepNumbers, function (array $a, array $b): int {
-            if (($a['score'] ?? 0) === ($b['score'] ?? 0)) {
-                return ((int) $a['number']) <=> ((int) $b['number']);
-            }
-
-            return ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
-        });
-
-        usort($rankedOmitNumbers, function (array $a, array $b): int {
-            if (($a['score'] ?? 0) === ($b['score'] ?? 0)) {
-                return ((int) $a['number']) <=> ((int) $b['number']);
-            }
-
-            return ($b['score'] ?? 0) <=> ($a['score'] ?? 0);
-        });
-
-        $preferredOmitCount = min(
-            count($dezenasBase),
-            max($quantidadeOmitidas + 2, $quantidadeOmitidas * 3)
-        );
+        arsort($rankedKeepNumbers);
+        arsort($rankedOmitNumbers);
 
         return [
-            'keep_frequency' => $numberKeepFrequency,
-            'omit_frequency' => $numberOmitFrequency,
+            'number_keep_frequency' => $numberKeepFrequency,
+            'number_omit_frequency' => $numberOmitFrequency,
             'omission_set_frequency' => $omissionSetFrequency,
             'pair_keep_frequency' => $pairKeepFrequency,
-            'protected_keep_numbers' => array_map(fn (array $item) => (int) $item['number'], array_slice($rankedKeepNumbers, 0, 15)),
-            'preferred_omit_numbers' => array_map(fn (array $item) => (int) $item['number'], array_slice($rankedOmitNumbers, 0, $preferredOmitCount)),
-            'ranked_keep_numbers' => $rankedKeepNumbers,
-            'ranked_omit_numbers' => $rankedOmitNumbers,
+            'protected_keep_numbers' => array_slice(array_keys($rankedKeepNumbers), 0, min(14, count($rankedKeepNumbers))),
+            'preferred_omit_numbers' => array_slice(array_keys($rankedOmitNumbers), 0, max(4, $quantidadeOmitidas + 2)),
         ];
     }
 
@@ -370,108 +675,92 @@ class FechamentoCoverageOptimizerService
     ): float {
         $game = $this->normalizeNumbers($candidate['dezenas'] ?? []);
         $omitted = $this->normalizeNumbers($candidate['omitted_dezenas'] ?? []);
+        $omittedKey = $this->candidateKey($omitted);
 
-        $rawValue = $this->rawValue($candidate);
-        $keepValue = $this->keepConvergenceValue($game, $omissionModel);
-        $omitValue = $this->omissionSetValue($omitted, $omissionModel, $numberProfiles);
-        $protectedPenalty = $this->protectedOmissionPenalty($omitted, $omissionModel, $quantidadeOmitidas);
-
-        return
-            ($rawValue * $this->rawWeight($quantidadeOmitidas)) +
-            ($keepValue * $this->keepWeight($quantidadeOmitidas)) +
-            ($omitValue * $this->omitWeight($quantidadeOmitidas)) -
-            $protectedPenalty;
-    }
-
-    protected function keepConvergenceValue(array $game, array $omissionModel): float
-    {
-        $keepFrequency = $omissionModel['keep_frequency'] ?? [];
-        $pairKeepFrequency = $omissionModel['pair_keep_frequency'] ?? [];
-        $protected = $omissionModel['protected_keep_numbers'] ?? [];
-
-        $value = 0.0;
-        $protectedHits = count(array_intersect($game, $protected));
+        $raw = $this->rawValue($candidate);
+        $keepValue = 0.0;
+        $omitValue = 0.0;
+        $pairValue = 0.0;
 
         foreach ($game as $number) {
-            $value += (float) ($keepFrequency[$number] ?? 0.0) * 140.0;
+            $profile = $numberProfiles[$number] ?? [];
+
+            $keepValue +=
+                (($omissionModel['number_keep_frequency'][$number] ?? 0.0) * 130.0) +
+                ((float) ($profile['score'] ?? 0.5) * 50.0) +
+                ((float) ($profile['maturity'] ?? 0.5) * 36.0) +
+                ((float) ($profile['affinity'] ?? 0.5) * 28.0);
+        }
+
+        foreach ($omitted as $number) {
+            $profile = $numberProfiles[$number] ?? [];
+
+            $omitValue +=
+                (($omissionModel['number_omit_frequency'][$number] ?? 0.0) * 140.0) +
+                ((1.0 - (float) ($profile['score'] ?? 0.5)) * 34.0) +
+                ((float) ($profile['return_pressure'] ?? 0.5) * 24.0);
         }
 
         for ($i = 0; $i < count($game); $i++) {
             for ($j = $i + 1; $j < count($game); $j++) {
                 $key = $game[$i] . '-' . $game[$j];
-                $value += ((float) ($pairKeepFrequency[$key] ?? 0.0)) * 1.2;
+                $pairValue += (float) ($omissionModel['pair_keep_frequency'][$key] ?? 0.0);
             }
         }
 
-        if ($protectedHits >= 15) {
-            $value += 4200.0;
-        } elseif ($protectedHits === 14) {
-            $value += 1800.0;
-        } elseif ($protectedHits === 13) {
-            $value += 650.0;
-        }
+        $pairValue = $pairValue / max(1, 105);
+        $omissionSetPenalty = (float) ($omissionModel['omission_set_frequency'][$omittedKey] ?? 0.0) * 120.0;
+        $protectedPenalty = $this->protectedOmissionPenalty($omitted, $omissionModel, $quantidadeOmitidas);
+        $spreadBonus = $this->omittedStructuralSpreadBonus($omitted);
 
-        return $value;
+        return
+            ($raw * $this->rawWeight($quantidadeOmitidas)) +
+            ($keepValue * $this->keepWeight($quantidadeOmitidas)) +
+            ($omitValue * $this->omitWeight($quantidadeOmitidas)) +
+            ($pairValue * 120.0) +
+            $spreadBonus -
+            $omissionSetPenalty -
+            $protectedPenalty;
     }
 
-    protected function omissionSetValue(array $omitted, array $omissionModel, array $numberProfiles): float
-    {
-        $omitFrequency = $omissionModel['omit_frequency'] ?? [];
-        $omissionSetFrequency = $omissionModel['omission_set_frequency'] ?? [];
-        $preferred = $omissionModel['preferred_omit_numbers'] ?? [];
+    protected function portfolioChoiceScore(
+        array $candidate,
+        array $selected,
+        array $coverage,
+        int $quantidadeOmitidas
+    ): float {
+        $game = $this->normalizeNumbers($candidate['dezenas'] ?? []);
+        $omitted = $this->normalizeNumbers($candidate['omitted_dezenas'] ?? []);
 
-        $value = 0.0;
-        $omittedKey = $this->candidateKey($omitted);
-
-        $value += ((float) ($omissionSetFrequency[$omittedKey] ?? 0.0)) * 620.0;
-        $value += count(array_intersect($omitted, $preferred)) * 165.0;
+        $base = (float) ($candidate['_adaptive_omission_score'] ?? 0.0);
+        $newOmittedCoverage = 0.0;
+        $clonePenalty = 0.0;
 
         foreach ($omitted as $number) {
-            $profile = $numberProfiles[$number] ?? [];
-
-            $strength = (float) ($profile['score'] ?? $profile['maturity'] ?? 0.5);
-            $maturity = (float) ($profile['maturity'] ?? $strength);
-            $affinity = (float) ($profile['affinity'] ?? 0.5);
-            $returnPressure = (float) ($profile['return_pressure'] ?? 0.5);
-            $persistence = (float) ($profile['persistence'] ?? 0.5);
-            $lastDrawPresence = (float) ($profile['last_draw_presence'] ?? 0.0);
-
-            $value += ((float) ($omitFrequency[$number] ?? 0.0)) * 210.0;
-            $value += (1.0 - $strength) * 80.0;
-            $value += (1.0 - $maturity) * 40.0;
-            $value += (1.0 - $affinity) * 34.0;
-            $value += (1.0 - $returnPressure) * 22.0;
-            $value += (1.0 - $persistence) * 18.0;
-
-            if ($lastDrawPresence <= 0.0) {
-                $value += 12.0;
+            if (! isset($coverage[$number])) {
+                $newOmittedCoverage += 120.0;
             } else {
-                $value -= 14.0;
+                $newOmittedCoverage += max(0.0, 40.0 - ($coverage[$number] * 8.0));
             }
         }
 
-        $value += $this->omittedStructuralSpreadBonus($omitted);
+        foreach ($selected as $selectedGame) {
+            $selectedNumbers = $this->normalizeNumbers($selectedGame['dezenas'] ?? []);
+            $intersection = count(array_intersect($game, $selectedNumbers));
+            $hammingDistance = 15 - $intersection;
 
-        return $value;
-    }
+            if ($intersection >= 14 && ! $this->isRankProtectedCandidate($candidate, $quantidadeOmitidas)) {
+                $clonePenalty += 900.0;
+            } elseif ($intersection === 13 && ! $this->isRankProtectedCandidate($candidate, $quantidadeOmitidas)) {
+                $clonePenalty += 260.0;
+            } elseif ($intersection === 12) {
+                $clonePenalty += 80.0;
+            }
 
-    protected function protectedOmissionPenalty(array $omitted, array $omissionModel, int $quantidadeOmitidas): float
-    {
-        $protected = $omissionModel['protected_keep_numbers'] ?? [];
-        $protectedOmitted = count(array_intersect($omitted, $protected));
-
-        if ($protectedOmitted <= 0) {
-            return 0.0;
+            $base += $hammingDistance * 16.0;
         }
 
-        return $protectedOmitted * match ($quantidadeOmitidas) {
-            1 => 1800.0,
-            2 => 1400.0,
-            3 => 1000.0,
-            4 => 760.0,
-            5 => 620.0,
-            default => 900.0,
-        };
+        return $base + $newOmittedCoverage - $clonePenalty;
     }
 
     protected function canAcceptAdaptiveCandidate(
@@ -481,6 +770,10 @@ class FechamentoCoverageOptimizerService
         int $quantidadeJogos,
         int $quantidadeOmitidas
     ): bool {
+        if ($this->isRankProtectedCandidate($candidate, $quantidadeOmitidas) || $this->isEliteRawCandidate($candidate)) {
+            return true;
+        }
+
         $game = $this->normalizeNumbers($candidate['dezenas'] ?? []);
         $omitted = $this->normalizeNumbers($candidate['omitted_dezenas'] ?? []);
         $protected = $omissionModel['protected_keep_numbers'] ?? [];
@@ -489,20 +782,20 @@ class FechamentoCoverageOptimizerService
 
         $minimumProtectedHits = match ($quantidadeOmitidas) {
             1 => 14,
-            2 => 14,
-            3 => 13,
-            4 => 12,
-            5 => 12,
-            default => 13,
+            2 => 13,
+            3 => 12,
+            4 => 11,
+            5 => 10,
+            default => 12,
         };
 
         $maximumProtectedOmitted = match ($quantidadeOmitidas) {
             1 => 1,
-            2 => 1,
-            3 => 2,
-            4 => 3,
-            5 => 3,
-            default => 2,
+            2 => 2,
+            3 => 3,
+            4 => 4,
+            5 => 5,
+            default => 3,
         };
 
         if ($protectedHits < $minimumProtectedHits) {
@@ -540,37 +833,299 @@ class FechamentoCoverageOptimizerService
         return true;
     }
 
+    protected function respectsInternalDistance(
+        array $candidate,
+        array $selected,
+        int $maxIntersection,
+        int $quantidadeOmitidas,
+        int $quantidadeJogos
+    ): bool {
+        if ($this->isRankProtectedCandidate($candidate, $quantidadeOmitidas) || $this->isEliteRawCandidate($candidate)) {
+            return true;
+        }
+
+        if (empty($selected)) {
+            return true;
+        }
+
+        $game = $this->normalizeNumbers($candidate['dezenas'] ?? []);
+        $allowedHighSimilarity = $this->allowedHighSimilarityCount($quantidadeOmitidas, $quantidadeJogos);
+        $highSimilarityCount = 0;
+
+        foreach ($selected as $selectedGame) {
+            $selectedNumbers = $this->normalizeNumbers($selectedGame['dezenas'] ?? []);
+            $intersection = count(array_intersect($game, $selectedNumbers));
+
+            if ($intersection > $maxIntersection) {
+                $highSimilarityCount++;
+            }
+
+            if ($intersection >= 14) {
+                return false;
+            }
+        }
+
+        return $highSimilarityCount <= $allowedHighSimilarity;
+    }
+
+    protected function respectsEmergencyDistance(
+        array $candidate,
+        array $selected,
+        int $quantidadeOmitidas,
+        int $quantidadeJogos
+    ): bool {
+        if (empty($selected)) {
+            return true;
+        }
+
+        if ($this->isRankProtectedCandidate($candidate, $quantidadeOmitidas) || $this->isEliteRawCandidate($candidate)) {
+            return true;
+        }
+
+        $game = $this->normalizeNumbers($candidate['dezenas'] ?? []);
+        $nearCloneCount = 0;
+
+        foreach ($selected as $selectedGame) {
+            $selectedNumbers = $this->normalizeNumbers($selectedGame['dezenas'] ?? []);
+            $intersection = count(array_intersect($game, $selectedNumbers));
+
+            if ($intersection >= 14) {
+                $nearCloneCount++;
+            }
+        }
+
+        return $nearCloneCount < max(1, (int) floor($quantidadeJogos * 0.08));
+    }
+
+    protected function respectsRankProtectedDistance(array $candidate, array $selected, int $quantidadeOmitidas): bool
+    {
+        if (empty($selected)) {
+            return true;
+        }
+
+        $game = $this->normalizeNumbers($candidate['dezenas'] ?? []);
+        $nearCloneCount = 0;
+
+        foreach ($selected as $selectedGame) {
+            $selectedNumbers = $this->normalizeNumbers($selectedGame['dezenas'] ?? []);
+            $intersection = count(array_intersect($game, $selectedNumbers));
+
+            if ($intersection === 15) {
+                return false;
+            }
+
+            if ($intersection >= 14) {
+                $nearCloneCount++;
+            }
+        }
+
+        return $nearCloneCount <= match ($quantidadeOmitidas) {
+            1, 2 => 1,
+            3 => 2,
+            4 => 4,
+            5 => 5,
+            default => 2,
+        };
+    }
+
     protected function rawValue(array $candidate): float
     {
         $score = (float) ($candidate['normalized_score'] ?? 0.0);
         $baseScore = (float) ($candidate['base_score'] ?? 0.0);
         $eliteBonus = (float) ($candidate['elite_bonus'] ?? 0.0);
         $survivalQuality = (float) ($candidate['survival_quality'] ?? 0.0);
+        $explosionQuality = (float) ($candidate['explosion_quality'] ?? 0.0);
         $correlationQuality = (float) ($candidate['correlation_quality'] ?? 0.0);
         $structureQuality = (float) ($candidate['structure_quality'] ?? 0.0);
+        $rawRank = (int) ($candidate['raw_rank'] ?? PHP_INT_MAX);
 
         $value = 0.0;
 
-        $value += $score * 620.0;
-        $value += $baseScore * 1.45;
-        $value += min(160.0, $eliteBonus * 6.0);
-        $value += $survivalQuality * 95.0;
-        $value += $correlationQuality * 42.0;
-        $value += $structureQuality * 30.0;
+        $value += $score * 520.0;
+        $value += $baseScore * 1.15;
+        $value += min(140.0, $eliteBonus * 4.0);
+        $value += $survivalQuality * 55.0;
+        $value += $explosionQuality * 95.0;
+        $value += $correlationQuality * 52.0;
+        $value += $structureQuality * 20.0;
+
+        if ($rawRank <= 100) {
+            $value += 1200.0;
+        } elseif ($rawRank <= 300) {
+            $value += 900.0;
+        } elseif ($rawRank <= 600) {
+            $value += 650.0;
+        } elseif ($rawRank <= 900) {
+            $value += 420.0;
+        }
+
+        if ($this->isRankProtectedCandidate($candidate, 4)) {
+            $value += 1000.0;
+        }
 
         if ($score >= 0.99) {
-            $value += 2400.0;
+            $value += 1800.0;
         } elseif ($score >= 0.97) {
-            $value += 1650.0;
+            $value += 1200.0;
         } elseif ($score >= 0.94) {
-            $value += 920.0;
+            $value += 720.0;
         } elseif ($score >= 0.90) {
-            $value += 520.0;
+            $value += 360.0;
         } elseif ($score >= 0.84) {
-            $value += 220.0;
+            $value += 160.0;
         }
 
         return $value;
+    }
+
+    protected function rankProtectionScore(array $candidate, int $quantidadeOmitidas): float
+    {
+        $rawRank = (int) ($candidate['raw_rank'] ?? PHP_INT_MAX);
+        $score = (float) ($candidate['score'] ?? 0.0);
+        $normalizedScore = (float) ($candidate['normalized_score'] ?? 0.0);
+        $correlationQuality = (float) ($candidate['correlation_quality'] ?? 0.0);
+        $survivalQuality = (float) ($candidate['survival_quality'] ?? 0.0);
+        $explosionQuality = (float) ($candidate['explosion_quality'] ?? 0.0);
+
+        $rankScore = max(0.0, ($this->rankProtectionWindow($quantidadeOmitidas) - $rawRank + 1) / max(1, $this->rankProtectionWindow($quantidadeOmitidas)));
+
+        return
+            ($rankScore * 1000.0) +
+            ($normalizedScore * 220.0) +
+            ($score * 2.0) +
+            ($correlationQuality * 120.0) +
+            ($survivalQuality * 60.0) +
+            ($explosionQuality * 80.0);
+    }
+
+    protected function isRankProtectedCandidate(array $candidate, int $quantidadeOmitidas): bool
+    {
+        $rawRank = (int) ($candidate['raw_rank'] ?? PHP_INT_MAX);
+
+        return $rawRank <= $this->rankProtectionWindow($quantidadeOmitidas);
+    }
+
+    protected function rankProtectionWindow(int $quantidadeOmitidas): int
+    {
+        return match ($quantidadeOmitidas) {
+            1 => 80,
+            2 => 180,
+            3 => 420,
+            4 => 900,
+            5 => 1400,
+            default => 420,
+        };
+    }
+
+    protected function rankProtectedCoreCount(int $quantidadeJogos, int $quantidadeOmitidas): int
+    {
+        return match ($quantidadeOmitidas) {
+            1 => max(3, (int) floor($quantidadeJogos * 0.10)),
+            2 => max(6, (int) floor($quantidadeJogos * 0.14)),
+            3 => max(10, (int) floor($quantidadeJogos * 0.18)),
+            4 => max(22, (int) floor($quantidadeJogos * 0.38)),
+            5 => max(32, (int) floor($quantidadeJogos * 0.44)),
+            default => max(10, (int) floor($quantidadeJogos * 0.18)),
+        };
+    }
+
+    protected function isEliteRawCandidate(array $candidate): bool
+    {
+        $normalizedScore = (float) ($candidate['normalized_score'] ?? 0.0);
+        $score = (float) ($candidate['score'] ?? 0.0);
+        $originalScore = (float) ($candidate['original_score'] ?? $score);
+
+        if (! empty($candidate['rank_protected'])) {
+            return true;
+        }
+
+        if (! empty($candidate['raw_survivor_priority'])) {
+            return true;
+        }
+
+        if ($normalizedScore >= 0.97) {
+            return true;
+        }
+
+        if ($normalizedScore >= 0.94 && ($candidate['elite_bonus'] ?? 0) > 0) {
+            return true;
+        }
+
+        if ($originalScore > 0 && $score > 0 && abs($originalScore - $score) <= 0.000001 && $normalizedScore >= 0.95) {
+            return true;
+        }
+
+        return false;
+    }
+
+    protected function protectedRawCoreCount(int $quantidadeJogos, int $quantidadeOmitidas): int
+    {
+        return match ($quantidadeOmitidas) {
+            1 => max(4, (int) floor($quantidadeJogos * 0.34)),
+            2 => max(6, (int) floor($quantidadeJogos * 0.30)),
+            3 => max(9, (int) floor($quantidadeJogos * 0.26)),
+            4 => max(28, (int) floor($quantidadeJogos * 0.46)),
+            5 => max(38, (int) floor($quantidadeJogos * 0.52)),
+            default => max(8, (int) floor($quantidadeJogos * 0.25)),
+        };
+    }
+
+    protected function protectedRawMaxIntersection(int $quantidadeOmitidas): int
+    {
+        return match ($quantidadeOmitidas) {
+            1 => 14,
+            2 => 14,
+            3 => 13,
+            4 => 14,
+            5 => 14,
+            default => 13,
+        };
+    }
+
+    protected function respectsProtectedRawDistance(
+        array $candidate,
+        array $selected,
+        int $maxIntersection,
+        int $quantidadeOmitidas
+    ): bool {
+        if ($this->isRankProtectedCandidate($candidate, $quantidadeOmitidas) || $this->isEliteRawCandidate($candidate)) {
+            return true;
+        }
+
+        if (empty($selected)) {
+            return true;
+        }
+
+        $game = $this->normalizeNumbers($candidate['dezenas'] ?? []);
+
+        foreach ($selected as $selectedGame) {
+            $selectedNumbers = $this->normalizeNumbers($selectedGame['dezenas'] ?? []);
+            $intersection = count(array_intersect($game, $selectedNumbers));
+
+            if ($intersection > $maxIntersection) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    protected function protectedOmissionPenalty(
+        array $omitted,
+        array $omissionModel,
+        int $quantidadeOmitidas
+    ): float {
+        $protected = $omissionModel['protected_keep_numbers'] ?? [];
+        $protectedOmitted = count(array_intersect($omitted, $protected));
+
+        return $protectedOmitted * match ($quantidadeOmitidas) {
+            1 => 1800.0,
+            2 => 1100.0,
+            3 => 760.0,
+            4 => 520.0,
+            5 => 380.0,
+            default => 760.0,
+        };
     }
 
     protected function addCandidate(
@@ -591,8 +1146,7 @@ class FechamentoCoverageOptimizerService
         $omitted = $this->normalizeNumbers($candidate['omitted_dezenas'] ?? []);
 
         foreach ($omitted as $number) {
-            $coverage['singles'][$number] = true;
-            $coverage['frequency'][$number] = ($coverage['frequency'][$number] ?? 0) + 1;
+            $coverage[$number] = ($coverage[$number] ?? 0) + 1;
         }
 
         return true;
@@ -673,25 +1227,15 @@ class FechamentoCoverageOptimizerService
         return $profiles;
     }
 
-    protected function emptyCoverageState(array $dezenasBase): array
-    {
-        return [
-            'singles' => [],
-            'pairs' => [],
-            'triples' => [],
-            'frequency' => array_fill_keys($dezenasBase, 0),
-        ];
-    }
-
     protected function windowMultiplier(int $quantidadeOmitidas): int
     {
         return match ($quantidadeOmitidas) {
-            1 => 6,
-            2 => 12,
-            3 => 24,
-            4 => 36,
-            5 => 48,
-            default => 24,
+            1 => 8,
+            2 => 16,
+            3 => 28,
+            4 => 40,
+            5 => 54,
+            default => 28,
         };
     }
 
@@ -699,71 +1243,83 @@ class FechamentoCoverageOptimizerService
     {
         return match ($quantidadeOmitidas) {
             1 => 24,
-            2 => 80,
-            3 => 420,
-            4 => 720,
-            5 => 1050,
-            default => 420,
+            2 => 100,
+            3 => 460,
+            4 => 820,
+            5 => 1200,
+            default => 460,
         };
     }
 
-    protected function minimumEliteLock(int $quantidadeOmitidas): int
+    protected function strictMaxIntersection(int $quantidadeOmitidas): int
     {
         return match ($quantidadeOmitidas) {
-            1 => 3,
-            2 => 5,
-            3 => 8,
-            4 => 10,
+            1 => 13,
+            2 => 13,
+            3 => 12,
+            4 => 12,
             5 => 12,
-            default => 8,
+            default => 12,
         };
     }
 
-    protected function eliteLockRatio(int $quantidadeOmitidas): float
+    protected function commercialMaxIntersection(int $quantidadeOmitidas): int
     {
         return match ($quantidadeOmitidas) {
-            1 => 0.20,
-            2 => 0.24,
-            3 => 0.30,
-            4 => 0.34,
-            5 => 0.38,
-            default => 0.30,
+            1 => 13,
+            2 => 13,
+            3 => 13,
+            4 => 13,
+            5 => 13,
+            default => 13,
+        };
+    }
+
+    protected function allowedHighSimilarityCount(int $quantidadeOmitidas, int $quantidadeJogos): int
+    {
+        return match ($quantidadeOmitidas) {
+            1 => 0,
+            2 => 1,
+            3 => max(1, (int) floor($quantidadeJogos * 0.04)),
+            4 => max(4, (int) floor($quantidadeJogos * 0.16)),
+            5 => max(6, (int) floor($quantidadeJogos * 0.20)),
+            default => 1,
         };
     }
 
     protected function rawWeight(int $quantidadeOmitidas): float
     {
         return match ($quantidadeOmitidas) {
-            1 => 0.48,
-            2 => 0.46,
-            3 => 0.40,
-            4 => 0.36,
-            5 => 0.34,
-            default => 0.40,
+            1 => 0.62,
+            2 => 0.60,
+            3 => 0.56,
+            4 => 0.62,
+            5 => 0.64,
+            default => 0.56,
         };
     }
 
     protected function keepWeight(int $quantidadeOmitidas): float
     {
         return match ($quantidadeOmitidas) {
-            1 => 0.28,
-            2 => 0.30,
-            3 => 0.32,
-            4 => 0.34,
-            5 => 0.35,
-            default => 0.32,
+            1 => 0.20,
+            2 => 0.22,
+            3 => 0.24,
+            4 => 0.20,
+            5 => 0.18,
+            default => 0.24,
         };
     }
 
     protected function omitWeight(int $quantidadeOmitidas): float
     {
         return match ($quantidadeOmitidas) {
-            1 => 0.24,
-            2 => 0.24,
-            3 => 0.28,
-            4 => 0.30,
-            5 => 0.31,
-            default => 0.28,
+            1 => 0.18,
+            2 => 0.18,
+            3 => 0.20,
+            4 => 0.18,
+            5 => 0.18,
+            default => 0.20,
         };
     }
 
@@ -772,22 +1328,22 @@ class FechamentoCoverageOptimizerService
         return match ($quantidadeOmitidas) {
             1 => 1,
             2 => 1,
-            3 => max(2, (int) floor($quantidadeJogos * 0.08)),
-            4 => max(2, (int) floor($quantidadeJogos * 0.10)),
-            5 => max(3, (int) floor($quantidadeJogos * 0.12)),
-            default => 2,
+            3 => max(1, (int) floor($quantidadeJogos * 0.05)),
+            4 => max(4, (int) floor($quantidadeJogos * 0.12)),
+            5 => max(6, (int) floor($quantidadeJogos * 0.16)),
+            default => 1,
         };
     }
 
     protected function nearCloneLimit(int $quantidadeOmitidas, int $quantidadeJogos): int
     {
         return match ($quantidadeOmitidas) {
-            1 => max(2, (int) floor($quantidadeJogos * 0.25)),
-            2 => max(3, (int) floor($quantidadeJogos * 0.30)),
-            3 => max(5, (int) floor($quantidadeJogos * 0.36)),
-            4 => max(6, (int) floor($quantidadeJogos * 0.40)),
-            5 => max(8, (int) floor($quantidadeJogos * 0.45)),
-            default => max(5, (int) floor($quantidadeJogos * 0.36)),
+            1 => 0,
+            2 => 1,
+            3 => max(1, (int) floor($quantidadeJogos * 0.04)),
+            4 => max(5, (int) floor($quantidadeJogos * 0.18)),
+            5 => max(7, (int) floor($quantidadeJogos * 0.22)),
+            default => 1,
         };
     }
 

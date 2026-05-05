@@ -3,6 +3,7 @@
 namespace App\Services\Lottus\Fechamento;
 
 use App\Models\LotofacilConcurso;
+use App\Services\Lottus\Learning\Scoring\FechamentoBaseDecisionService;
 use Illuminate\Support\Collection;
 
 class FechamentoBaseCompetitionService
@@ -11,7 +12,8 @@ class FechamentoBaseCompetitionService
     protected array $lastCompetitionReport = [];
 
     public function __construct(
-        protected FechamentoAffinityClusterService $affinityClusterService
+        protected FechamentoAffinityClusterService $affinityClusterService,
+        protected FechamentoBaseDecisionService $decisionService
     ) {
     }
 
@@ -27,109 +29,21 @@ class FechamentoBaseCompetitionService
         LotofacilConcurso $concursoBase,
         array $patternContext = []
     ): array {
-        $primaryBase = $this->normalizeNumbers($primaryBase);
-
-        if ($quantidadeDezenas < 16 || $quantidadeDezenas > 20) {
-            return $primaryBase;
-        }
-
-        if (count($primaryBase) !== $quantidadeDezenas) {
-            return $primaryBase;
-        }
-
-        $profiles = $this->buildNumberProfiles(
+        $bases = $this->selectTopBases(
+            primaryBase: $primaryBase,
+            quantidadeDezenas: $quantidadeDezenas,
+            historico: $historico,
             frequencyContext: $frequencyContext,
             delayContext: $delayContext,
             correlationContext: $correlationContext,
+            structureContext: $structureContext,
             cycleContext: $cycleContext,
-            concursoBase: $concursoBase
-        );
-
-        $this->lastNumberScores = $profiles;
-
-        $historicalDraws = $this->extractHistoricalDraws($historico, $concursoBase);
-
-        $candidates = [];
-
-        $candidates[] = $this->makeCandidate(
-            strategy: 'selector_primary',
-            numbers: $primaryBase,
-            profiles: $profiles,
-            quantidadeDezenas: $quantidadeDezenas,
-            historicalDraws: $historicalDraws,
-            patternContext: $patternContext
-        );
-
-        foreach ($this->strategies() as $strategyName => $weights) {
-            $base = $this->buildBaseFromStrategy(
-                profiles: $profiles,
-                quantidadeDezenas: $quantidadeDezenas,
-                weights: $this->applyPatternBias($weights, $strategyName, $patternContext),
-                concursoBase: $concursoBase,
-                patternContext: $patternContext
-            );
-
-            if (count($base) !== $quantidadeDezenas) {
-                continue;
-            }
-
-            $candidates[] = $this->makeCandidate(
-                strategy: $strategyName,
-                numbers: $base,
-                profiles: $profiles,
-                quantidadeDezenas: $quantidadeDezenas,
-                historicalDraws: $historicalDraws,
-                patternContext: $patternContext
-            );
-        }
-
-        $candidates = $this->addAffinityClusterCandidates(
-            candidates: $candidates,
-            profiles: $profiles,
-            quantidadeDezenas: $quantidadeDezenas,
-            historicalDraws: $historicalDraws,
-            patternContext: $patternContext
-        );
-
-        $candidates = $this->addBlockCandidates(
-            candidates: $candidates,
-            profiles: $profiles,
-            quantidadeDezenas: $quantidadeDezenas,
-            historicalDraws: $historicalDraws,
             concursoBase: $concursoBase,
-            patternContext: $patternContext
+            patternContext: $patternContext,
+            limit: 1
         );
 
-        $candidates = $this->uniqueCandidates($candidates);
-
-        usort($candidates, function (array $a, array $b): int {
-            if (($a['fitness'] ?? 0) === ($b['fitness'] ?? 0)) {
-                return strcmp($a['key'] ?? '', $b['key'] ?? '');
-            }
-
-            return ($b['fitness'] ?? 0) <=> ($a['fitness'] ?? 0);
-        });
-
-        $winner = $candidates[0] ?? [
-            'strategy' => 'fallback_primary',
-            'numbers' => $primaryBase,
-            'fitness' => 0,
-            'profile' => [],
-            'containment' => [],
-        ];
-
-        $this->lastCompetitionReport = [
-            'concurso' => $concursoBase->concurso,
-            'quantidade_dezenas' => $quantidadeDezenas,
-            'pattern_regime' => $patternContext['regime'] ?? null,
-            'pattern_confidence' => $patternContext['confidence'] ?? null,
-            'winner' => $winner,
-            'candidates' => array_slice($candidates, 0, 10),
-        ];
-
-        logger()->info('FECHAMENTO_BASE_COMPETITION_V3', $this->lastCompetitionReport);
-
-        return $winner['numbers'];
+        return $bases[0] ?? $this->normalizeNumbers($primaryBase);
     }
 
     public function selectTopBases(
@@ -156,7 +70,13 @@ class FechamentoBaseCompetitionService
             return [$primaryBase];
         }
 
-        $profiles = $this->buildNumberProfiles(
+        $historicalContests = $this->extractHistoricalContests($historico, $concursoBase);
+
+        if (count($historicalContests) < 180) {
+            return [$primaryBase];
+        }
+
+        $currentProfiles = $this->buildCurrentNumberProfiles(
             frequencyContext: $frequencyContext,
             delayContext: $delayContext,
             correlationContext: $correlationContext,
@@ -164,57 +84,65 @@ class FechamentoBaseCompetitionService
             concursoBase: $concursoBase
         );
 
-        $this->lastNumberScores = $profiles;
+        $this->lastNumberScores = $currentProfiles;
 
-        $historicalDraws = $this->extractHistoricalDraws($historico, $concursoBase);
+        $strategyDefinitions = $this->strategyDefinitions();
+        $walkForwardReport = $this->runWalkForwardTournament(
+            historicalContests: $historicalContests,
+            quantidadeDezenas: $quantidadeDezenas,
+            strategyDefinitions: $strategyDefinitions
+        );
 
         $candidates = [];
 
-        $candidates[] = $this->makeCandidate(
+        $candidates[] = $this->makeCurrentCandidate(
             strategy: 'selector_primary',
             numbers: $primaryBase,
-            profiles: $profiles,
+            profiles: $currentProfiles,
+            historicalContests: $historicalContests,
             quantidadeDezenas: $quantidadeDezenas,
-            historicalDraws: $historicalDraws,
-            patternContext: $patternContext
+            walkForwardMetrics: $walkForwardReport['strategies']['selector_primary'] ?? []
         );
 
-        foreach ($this->strategies() as $strategyName => $weights) {
-            $base = $this->buildBaseFromStrategy(
-                profiles: $profiles,
+        foreach ($strategyDefinitions as $strategyName => $weights) {
+            $base = $this->buildBaseFromProfiles(
+                profiles: $currentProfiles,
                 quantidadeDezenas: $quantidadeDezenas,
-                weights: $this->applyPatternBias($weights, $strategyName, $patternContext),
-                concursoBase: $concursoBase,
-                patternContext: $patternContext
+                weights: $this->applyPatternBias($weights, $patternContext),
+                forcedNumbers: [],
+                blockedNumbers: [],
+                salt: crc32($strategyName . '|' . $concursoBase->concurso)
             );
 
             if (count($base) !== $quantidadeDezenas) {
                 continue;
             }
 
-            $candidates[] = $this->makeCandidate(
+            $candidates[] = $this->makeCurrentCandidate(
                 strategy: $strategyName,
                 numbers: $base,
-                profiles: $profiles,
+                profiles: $currentProfiles,
+                historicalContests: $historicalContests,
                 quantidadeDezenas: $quantidadeDezenas,
-                historicalDraws: $historicalDraws,
-                patternContext: $patternContext
+                walkForwardMetrics: $walkForwardReport['strategies'][$strategyName] ?? []
             );
         }
 
-        $candidates = $this->addAffinityClusterCandidates(
+        $candidates = $this->addWalkForwardHybridCandidates(
             candidates: $candidates,
-            profiles: $profiles,
+            strategyDefinitions: $strategyDefinitions,
+            walkForwardReport: $walkForwardReport,
+            currentProfiles: $currentProfiles,
+            historicalContests: $historicalContests,
             quantidadeDezenas: $quantidadeDezenas,
-            historicalDraws: $historicalDraws,
-            patternContext: $patternContext
+            concursoBase: $concursoBase
         );
 
-        $candidates = $this->addBlockCandidates(
+        $candidates = $this->addDiversityRescueCandidates(
             candidates: $candidates,
-            profiles: $profiles,
+            currentProfiles: $currentProfiles,
+            historicalContests: $historicalContests,
             quantidadeDezenas: $quantidadeDezenas,
-            historicalDraws: $historicalDraws,
             concursoBase: $concursoBase,
             patternContext: $patternContext
         );
@@ -222,12 +150,50 @@ class FechamentoBaseCompetitionService
         $candidates = $this->uniqueCandidates($candidates);
 
         usort($candidates, function (array $a, array $b): int {
-            if (($a['fitness'] ?? 0) === ($b['fitness'] ?? 0)) {
+            if (($a['fitness'] ?? 0.0) === ($b['fitness'] ?? 0.0)) {
                 return strcmp($a['key'] ?? '', $b['key'] ?? '');
             }
 
-            return ($b['fitness'] ?? 0) <=> ($a['fitness'] ?? 0);
+            return ($b['fitness'] ?? 0.0) <=> ($a['fitness'] ?? 0.0);
         });
+
+        $decision = $this->decisionService->decide(
+            bases: array_map(fn (array $candidate): array => $candidate['numbers'], $candidates),
+            quantidadeDezenas: $quantidadeDezenas,
+            historico: $historico,
+            concursoBase: $concursoBase,
+            limit: $limit
+        );
+
+        $selectedBases = $decision['bases'] ?? [];
+
+        if (! empty($selectedBases)) {
+            $selectedKeys = [];
+
+            foreach ($selectedBases as $base) {
+                $selectedKeys[$this->key($base)] = true;
+            }
+
+            $candidateMap = [];
+
+            foreach ($candidates as $candidate) {
+                $candidateMap[$this->key($candidate['numbers'] ?? [])] = $candidate;
+            }
+
+            $rankedCandidates = [];
+
+            foreach ($selectedBases as $base) {
+                $key = $this->key($base);
+
+                if (isset($candidateMap[$key])) {
+                    $rankedCandidates[] = $candidateMap[$key];
+                }
+            }
+
+            if (! empty($rankedCandidates)) {
+                $candidates = $rankedCandidates;
+            }
+        }
 
         $candidates = array_slice($candidates, 0, $limit);
 
@@ -235,22 +201,26 @@ class FechamentoBaseCompetitionService
             $candidates = [[
                 'strategy' => 'fallback_primary',
                 'numbers' => $primaryBase,
-                'fitness' => 0,
+                'key' => $this->key($primaryBase),
+                'fitness' => 0.0,
                 'profile' => [],
-                'containment' => [],
+                'walk_forward' => [],
+                'robustness' => [],
             ]];
         }
 
         $this->lastCompetitionReport = [
             'concurso' => $concursoBase->concurso,
             'quantidade_dezenas' => $quantidadeDezenas,
-            'pattern_regime' => $patternContext['regime'] ?? null,
-            'pattern_confidence' => $patternContext['confidence'] ?? null,
             'winner' => $candidates[0],
             'candidates' => $candidates,
+            'learning_decision' => $decision ?? [],
+            'walk_forward_report' => $walkForwardReport,
+            'pattern_regime' => $patternContext['regime'] ?? null,
+            'pattern_confidence' => $patternContext['confidence'] ?? null,
         ];
 
-        logger()->info('FECHAMENTO_BASE_COMPETITION_TOP_BASES', $this->lastCompetitionReport);
+        logger()->info('FECHAMENTO_BASE_COMPETITION_LEARNING_DECISION', $this->lastCompetitionReport);
 
         return array_map(
             fn (array $candidate): array => $candidate['numbers'],
@@ -268,7 +238,461 @@ class FechamentoBaseCompetitionService
         return $this->lastCompetitionReport;
     }
 
-    protected function buildNumberProfiles(
+    protected function strategyDefinitions(): array
+    {
+        return [
+            'balanced_predictive' => [
+                'frequency' => 0.16,
+                'delay' => 0.18,
+                'cycle' => 0.20,
+                'correlation' => 0.20,
+                'recent_presence' => 0.04,
+                'return_pressure' => 0.18,
+                'stability' => 0.04,
+            ],
+            'medium_window_strength' => [
+                'frequency' => 0.18,
+                'delay' => 0.16,
+                'cycle' => 0.18,
+                'correlation' => 0.22,
+                'recent_presence' => 0.06,
+                'return_pressure' => 0.16,
+                'stability' => 0.04,
+            ],
+            'long_window_stability' => [
+                'frequency' => 0.20,
+                'delay' => 0.14,
+                'cycle' => 0.16,
+                'correlation' => 0.22,
+                'recent_presence' => 0.04,
+                'return_pressure' => 0.14,
+                'stability' => 0.10,
+            ],
+            'return_pressure' => [
+                'frequency' => 0.10,
+                'delay' => 0.26,
+                'cycle' => 0.24,
+                'correlation' => 0.12,
+                'recent_presence' => 0.02,
+                'return_pressure' => 0.24,
+                'stability' => 0.02,
+            ],
+            'anti_recency_bias' => [
+                'frequency' => 0.14,
+                'delay' => 0.20,
+                'cycle' => 0.22,
+                'correlation' => 0.16,
+                'recent_presence' => 0.01,
+                'return_pressure' => 0.23,
+                'stability' => 0.04,
+            ],
+            'correlation_blocks' => [
+                'frequency' => 0.12,
+                'delay' => 0.12,
+                'cycle' => 0.14,
+                'correlation' => 0.40,
+                'recent_presence' => 0.04,
+                'return_pressure' => 0.14,
+                'stability' => 0.04,
+            ],
+            'peak_correlation_hunt' => [
+                'frequency' => 0.08,
+                'delay' => 0.12,
+                'cycle' => 0.14,
+                'correlation' => 0.50,
+                'recent_presence' => 0.02,
+                'return_pressure' => 0.12,
+                'stability' => 0.02,
+            ],
+            'fourteen_ceiling_hunt' => [
+                'frequency' => 0.06,
+                'delay' => 0.18,
+                'cycle' => 0.20,
+                'correlation' => 0.36,
+                'recent_presence' => 0.01,
+                'return_pressure' => 0.18,
+                'stability' => 0.01,
+            ],
+            'rupture_controlled' => [
+                'frequency' => 0.10,
+                'delay' => 0.24,
+                'cycle' => 0.24,
+                'correlation' => 0.16,
+                'recent_presence' => 0.01,
+                'return_pressure' => 0.23,
+                'stability' => 0.02,
+            ],
+            'hot_neutral_balance' => [
+                'frequency' => 0.18,
+                'delay' => 0.16,
+                'cycle' => 0.18,
+                'correlation' => 0.20,
+                'recent_presence' => 0.06,
+                'return_pressure' => 0.16,
+                'stability' => 0.06,
+            ],
+        ];
+    }
+
+    protected function runWalkForwardTournament(
+        array $historicalContests,
+        int $quantidadeDezenas,
+        array $strategyDefinitions
+    ): array {
+        $minTrainingSize = 160;
+        $evaluationWindow = min(120, max(40, count($historicalContests) - $minTrainingSize - 1));
+        $startIndex = max($minTrainingSize, count($historicalContests) - $evaluationWindow);
+        $strategyMetrics = [];
+
+        $strategyNames = array_merge(['selector_primary'], array_keys($strategyDefinitions));
+
+        foreach ($strategyNames as $strategyName) {
+            $strategyMetrics[$strategyName] = [
+                'strategy' => $strategyName,
+                'samples' => 0,
+                'total_hits' => 0,
+                'avg_hits' => 0.0,
+                'min_hits' => 15,
+                'max_hits' => 0,
+                'coverage_11' => 0,
+                'coverage_12' => 0,
+                'coverage_13' => 0,
+                'coverage_14' => 0,
+                'score' => 0.0,
+                'recent_score' => 0.0,
+                'stability' => 0.0,
+                'missed_critical_numbers' => [],
+                'hit_distribution' => [],
+            ];
+        }
+
+        for ($index = $startIndex; $index < count($historicalContests); $index++) {
+            $trainingContests = array_slice($historicalContests, 0, $index);
+            $targetContest = $historicalContests[$index];
+            $targetNumbers = $targetContest['numbers'] ?? [];
+
+            if (count($trainingContests) < $minTrainingSize || count($targetNumbers) !== 15) {
+                continue;
+            }
+
+            $trainingProfiles = $this->buildProfilesFromContests($trainingContests);
+            $selectorPrimary = $this->buildBaseFromProfiles(
+                profiles: $trainingProfiles,
+                quantidadeDezenas: $quantidadeDezenas,
+                weights: $strategyDefinitions['balanced_predictive'],
+                forcedNumbers: [],
+                blockedNumbers: [],
+                salt: (int) ($targetContest['concurso'] ?? $index)
+            );
+
+            $this->recordWalkForwardResult(
+                metrics: $strategyMetrics['selector_primary'],
+                base: $selectorPrimary,
+                targetNumbers: $targetNumbers,
+                recentWeight: $this->recentEvaluationWeight($index, count($historicalContests))
+            );
+
+            foreach ($strategyDefinitions as $strategyName => $weights) {
+                $base = $this->buildBaseFromProfiles(
+                    profiles: $trainingProfiles,
+                    quantidadeDezenas: $quantidadeDezenas,
+                    weights: $weights,
+                    forcedNumbers: [],
+                    blockedNumbers: [],
+                    salt: crc32($strategyName . '|' . ($targetContest['concurso'] ?? $index))
+                );
+
+                $this->recordWalkForwardResult(
+                    metrics: $strategyMetrics[$strategyName],
+                    base: $base,
+                    targetNumbers: $targetNumbers,
+                    recentWeight: $this->recentEvaluationWeight($index, count($historicalContests))
+                );
+            }
+        }
+
+        foreach ($strategyMetrics as $strategyName => &$metrics) {
+            $samples = max(1, (int) $metrics['samples']);
+            $metrics['avg_hits'] = round($metrics['total_hits'] / $samples, 8);
+            $metrics['coverage_11_rate'] = round($metrics['coverage_11'] / $samples, 8);
+            $metrics['coverage_12_rate'] = round($metrics['coverage_12'] / $samples, 8);
+            $metrics['coverage_13_rate'] = round($metrics['coverage_13'] / $samples, 8);
+            $metrics['coverage_14_rate'] = round($metrics['coverage_14'] / $samples, 8);
+            $metrics['stability'] = $this->walkForwardStability($metrics['hit_distribution']);
+            $peakScore = $this->walkForwardPeakScore($metrics['hit_distribution']);
+            $metrics['peak_score'] = round($peakScore, 8);
+            $metrics['score'] = round(
+                ($metrics['avg_hits'] * 2.0) +
+                ($metrics['max_hits'] * 22.0) +
+                ($peakScore * 38.0) +
+                ($metrics['coverage_11_rate'] * 5.0) +
+                ($metrics['coverage_12_rate'] * 8.0) +
+                ($metrics['coverage_13_rate'] * 42.0) +
+                ($metrics['coverage_14_rate'] * 140.0) +
+                ($metrics['recent_score'] * 8.0) +
+                ($metrics['stability'] * 1.5) -
+                (max(0, 13 - $metrics['max_hits']) * 18.0) -
+                (max(0, 11 - $metrics['min_hits']) * 0.8),
+                8
+            );
+        }
+
+        unset($metrics);
+
+        uasort($strategyMetrics, function (array $a, array $b): int {
+            if (($a['score'] ?? 0.0) === ($b['score'] ?? 0.0)) {
+                return strcmp($a['strategy'] ?? '', $b['strategy'] ?? '');
+            }
+
+            return ($b['score'] ?? 0.0) <=> ($a['score'] ?? 0.0);
+        });
+
+        return [
+            'samples' => $evaluationWindow,
+            'best_strategy' => array_key_first($strategyMetrics),
+            'strategies' => $strategyMetrics,
+        ];
+    }
+
+    protected function walkForwardPeakScore(array $hitDistribution): float
+    {
+        if (empty($hitDistribution)) {
+            return 0.0;
+        }
+
+        $score = 0.0;
+
+        foreach ($hitDistribution as $hits) {
+            $hits = (int) $hits;
+
+            if ($hits >= 15) {
+                $score += 36.0;
+            } elseif ($hits >= 14) {
+                $score += 18.0;
+            } elseif ($hits >= 13) {
+                $score += 6.0;
+            } elseif ($hits >= 12) {
+                $score += 1.2;
+            } elseif ($hits <= 9) {
+                $score -= 0.6;
+            }
+        }
+
+        return $score / max(1, count($hitDistribution));
+    }
+
+    protected function recordWalkForwardResult(
+        array &$metrics,
+        array $base,
+        array $targetNumbers,
+        float $recentWeight
+    ): void {
+        $base = $this->normalizeNumbers($base);
+        $targetNumbers = $this->normalizeNumbers($targetNumbers);
+
+        if (empty($base) || count($targetNumbers) !== 15) {
+            return;
+        }
+
+        $hits = count(array_intersect($base, $targetNumbers));
+        $misses = array_values(array_diff($targetNumbers, $base));
+
+        $metrics['samples']++;
+        $metrics['total_hits'] += $hits;
+        $metrics['min_hits'] = min($metrics['min_hits'], $hits);
+        $metrics['max_hits'] = max($metrics['max_hits'], $hits);
+        $metrics['recent_score'] += ($hits / 15) * $recentWeight;
+        $metrics['hit_distribution'][] = $hits;
+
+        if ($hits >= 11) {
+            $metrics['coverage_11']++;
+        }
+
+        if ($hits >= 12) {
+            $metrics['coverage_12']++;
+        }
+
+        if ($hits >= 13) {
+            $metrics['coverage_13']++;
+        }
+
+        if ($hits >= 14) {
+            $metrics['coverage_14']++;
+        }
+
+        foreach ($misses as $number) {
+            $metrics['missed_critical_numbers'][$number] = ($metrics['missed_critical_numbers'][$number] ?? 0) + 1;
+        }
+    }
+
+    protected function makeCurrentCandidate(
+        string $strategy,
+        array $numbers,
+        array $profiles,
+        array $historicalContests,
+        int $quantidadeDezenas,
+        array $walkForwardMetrics
+    ): array {
+        $numbers = $this->normalizeNumbers($numbers);
+        $profile = $this->baseProfile($numbers, $profiles);
+        $robustness = $this->baseHistoricalRobustness($numbers, $historicalContests);
+
+        $walkScore = (float) ($walkForwardMetrics['score'] ?? 0.0);
+        $walkAvgHits = (float) ($walkForwardMetrics['avg_hits'] ?? 0.0);
+        $walkCoverage11 = (float) ($walkForwardMetrics['coverage_11_rate'] ?? 0.0);
+        $walkCoverage12 = (float) ($walkForwardMetrics['coverage_12_rate'] ?? 0.0);
+        $walkCoverage13 = (float) ($walkForwardMetrics['coverage_13_rate'] ?? 0.0);
+        $walkCoverage14 = (float) ($walkForwardMetrics['coverage_14_rate'] ?? 0.0);
+        $walkStability = (float) ($walkForwardMetrics['stability'] ?? 0.0);
+        $walkPeakScore = (float) ($walkForwardMetrics['peak_score'] ?? 0.0);
+        $walkMaxHits = (float) ($walkForwardMetrics['max_hits'] ?? 0.0);
+
+        $fitness =
+            ($walkScore * 5.0) +
+            ($walkAvgHits * 2.0) +
+            ($walkMaxHits * 28.0) +
+            ($walkPeakScore * 46.0) +
+            ($walkCoverage11 * 5.0) +
+            ($walkCoverage12 * 8.0) +
+            ($walkCoverage13 * 46.0) +
+            ($walkCoverage14 * 180.0) +
+            ($walkStability * 1.5) +
+            (($robustness['avg_hits'] ?? 0.0) * 1.5) +
+            (($robustness['max_hits'] ?? 0.0) * 18.0) +
+            (($robustness['coverage_11'] ?? 0.0) * 4.0) +
+            (($robustness['coverage_12'] ?? 0.0) * 7.0) +
+            (($robustness['coverage_13'] ?? 0.0) * 42.0) +
+            (($robustness['coverage_14'] ?? 0.0) * 160.0) +
+            (($profile['entropy'] ?? 0.0) * 3.0) +
+            (($profile['line_balance'] ?? 0.0) * 2.0) +
+            (($profile['zone_balance'] ?? 0.0) * 2.0) -
+            (($profile['concentration_penalty'] ?? 0.0) * 2.0);
+
+        if ($this->isBaseCommerciallyFragile($numbers, $profiles, $quantidadeDezenas)) {
+            $fitness -= 2.0;
+        }
+
+        return [
+            'strategy' => $strategy,
+            'numbers' => $numbers,
+            'key' => $this->key($numbers),
+            'fitness' => round($fitness, 8),
+            'profile' => $profile,
+            'robustness' => $robustness,
+            'walk_forward' => $walkForwardMetrics,
+        ];
+    }
+
+    protected function addWalkForwardHybridCandidates(
+        array $candidates,
+        array $strategyDefinitions,
+        array $walkForwardReport,
+        array $currentProfiles,
+        array $historicalContests,
+        int $quantidadeDezenas,
+        LotofacilConcurso $concursoBase
+    ): array {
+        $rankedStrategies = array_keys($walkForwardReport['strategies'] ?? []);
+        $rankedStrategies = array_values(array_filter(
+            $rankedStrategies,
+            fn (string $strategy) => isset($strategyDefinitions[$strategy])
+        ));
+
+        $rankedStrategies = array_slice($rankedStrategies, 0, 4);
+
+        for ($i = 0; $i < count($rankedStrategies); $i++) {
+            for ($j = $i + 1; $j < count($rankedStrategies); $j++) {
+                $strategyA = $rankedStrategies[$i];
+                $strategyB = $rankedStrategies[$j];
+
+                $weights = $this->blendWeights(
+                    $strategyDefinitions[$strategyA],
+                    $strategyDefinitions[$strategyB],
+                    0.55
+                );
+
+                $base = $this->buildBaseFromProfiles(
+                    profiles: $currentProfiles,
+                    quantidadeDezenas: $quantidadeDezenas,
+                    weights: $weights,
+                    forcedNumbers: [],
+                    blockedNumbers: [],
+                    salt: crc32('hybrid|' . $strategyA . '|' . $strategyB . '|' . $concursoBase->concurso)
+                );
+
+                if (count($base) !== $quantidadeDezenas) {
+                    continue;
+                }
+
+                $metricsA = $walkForwardReport['strategies'][$strategyA] ?? [];
+                $metricsB = $walkForwardReport['strategies'][$strategyB] ?? [];
+                $hybridMetrics = $this->blendWalkForwardMetrics($metricsA, $metricsB);
+
+                $candidates[] = $this->makeCurrentCandidate(
+                    strategy: 'hybrid_' . $strategyA . '_' . $strategyB,
+                    numbers: $base,
+                    profiles: $currentProfiles,
+                    historicalContests: $historicalContests,
+                    quantidadeDezenas: $quantidadeDezenas,
+                    walkForwardMetrics: $hybridMetrics
+                );
+            }
+        }
+
+        return $candidates;
+    }
+
+    protected function addDiversityRescueCandidates(
+        array $candidates,
+        array $currentProfiles,
+        array $historicalContests,
+        int $quantidadeDezenas,
+        LotofacilConcurso $concursoBase,
+        array $patternContext
+    ): array {
+        $recentDraws = array_slice(array_column($historicalContests, 'numbers'), -80);
+        $frequentMissingNumbers = $this->frequentRecentlyMissedNumbers(
+            candidates: $candidates,
+            historicalDraws: $recentDraws,
+            profiles: $currentProfiles
+        );
+
+        $topCandidate = $candidates[0] ?? null;
+
+        if (! $topCandidate) {
+            return $candidates;
+        }
+
+        $base = $this->normalizeNumbers($topCandidate['numbers'] ?? []);
+
+        foreach ([2, 3, 4, 5, 6] as $mutationLevel) {
+            $rescued = $this->injectRescueNumbers(
+                base: $base,
+                profiles: $currentProfiles,
+                rescueNumbers: $frequentMissingNumbers,
+                quantidadeDezenas: $quantidadeDezenas,
+                mutationLevel: $mutationLevel,
+                salt: crc32('rescue|' . $mutationLevel . '|' . $concursoBase->concurso)
+            );
+
+            if (count($rescued) !== $quantidadeDezenas) {
+                continue;
+            }
+
+            $candidates[] = $this->makeCurrentCandidate(
+                strategy: 'walk_forward_rescue_' . $mutationLevel,
+                numbers: $rescued,
+                profiles: $currentProfiles,
+                historicalContests: $historicalContests,
+                quantidadeDezenas: $quantidadeDezenas,
+                walkForwardMetrics: $topCandidate['walk_forward'] ?? []
+            );
+        }
+
+        return $candidates;
+    }
+
+    protected function buildCurrentNumberProfiles(
         array $frequencyContext,
         array $delayContext,
         array $correlationContext,
@@ -285,275 +709,553 @@ class FechamentoBaseCompetitionService
         $profiles = [];
 
         foreach (range(1, 25) as $number) {
-            $frequency = (float) ($frequencyScores[$number] ?? 0.0);
-            $delay = (float) ($delayScores[$number] ?? 0.0);
-            $cycle = (float) ($cycleScores[$number] ?? 0.0);
+            $frequency = (float) ($frequencyScores[$number] ?? 0.5);
+            $delay = (float) ($delayScores[$number] ?? 0.5);
+            $cycle = (float) ($cycleScores[$number] ?? 0.5);
             $correlation = $this->averageCorrelation($number, $pairScores);
-            $lastDrawPresence = in_array($number, $lastDraw, true) ? 1.0 : 0.0;
+            $recentPresence = in_array($number, $lastDraw, true) ? 1.0 : 0.0;
             $cycleMissingPresence = in_array($number, $faltantes, true) ? 1.0 : 0.0;
-            $affinity = $this->affinityScore($number, $pairScores, $lastDraw);
-
-            $maturity = max(0.0, min(1.0,
-                ($frequency * 0.30) +
-                ($delay * 0.18) +
-                ($cycle * 0.22) +
-                ($correlation * 0.14) +
-                ($lastDrawPresence * 0.06) +
-                ($cycleMissingPresence * 0.10)
-            ));
-
+            $returnPressure = max(0.0, min(1.0, ($delay * 0.48) + ($cycle * 0.34) + ($cycleMissingPresence * 0.18)));
             $stability = $this->stabilityScore($frequency, $delay, $cycle);
-
-            $returnPressure = max(0.0, min(1.0,
-                ($delay * 0.34) +
-                ($cycle * 0.34) +
-                ($cycleMissingPresence * 0.20) +
-                ($affinity * 0.12)
-            ));
-
-            $persistence = max(0.0, min(1.0,
-                ($frequency * 0.34) +
-                ($lastDrawPresence * 0.26) +
-                ($affinity * 0.22) +
-                ($correlation * 0.18)
-            ));
-
-            $balanced = max(0.0, min(1.0,
-                ($maturity * 0.34) +
-                ($stability * 0.20) +
-                ($affinity * 0.28) +
-                ($returnPressure * 0.18)
-            ));
-
-            $antiBias = max(0.0, min(1.0,
-                ($balanced * 0.70) +
-                ((1.0 - abs($frequency - 0.55)) * 0.10) +
-                ((1.0 - abs($delay - 0.45)) * 0.08) +
-                ((1.0 - abs($cycle - 0.50)) * 0.12) -
-                $this->extremeBiasPenalty($frequency, $delay, $cycle)
+            $score = max(0.0, min(1.0,
+                ($frequency * 0.18) +
+                ($delay * 0.18) +
+                ($cycle * 0.20) +
+                ($correlation * 0.20) +
+                ($recentPresence * 0.04) +
+                ($returnPressure * 0.16) +
+                ($stability * 0.04)
             ));
 
             $profiles[$number] = [
                 'number' => $number,
-                'score' => round($balanced, 8),
-                'maturity' => round($maturity, 8),
-                'stability' => round($stability, 8),
-                'affinity' => round($affinity, 8),
-                'return_pressure' => round($returnPressure, 8),
-                'persistence' => round($persistence, 8),
-                'balanced' => round($balanced, 8),
-                'anti_bias' => round($antiBias, 8),
+                'score' => round($score, 8),
                 'frequency' => $frequency,
                 'delay' => $delay,
                 'cycle' => $cycle,
                 'correlation' => $correlation,
-                'last_draw_presence' => $lastDrawPresence,
-                'cycle_missing_presence' => $cycleMissingPresence,
+                'recent_presence' => $recentPresence,
+                'return_pressure' => $returnPressure,
+                'stability' => $stability,
                 'temperature' => $this->temperature($frequency, $delay, $cycle),
                 'line' => $this->line($number),
                 'zone' => $this->zone($number),
-                'is_edge' => $this->isEdge($number),
             ];
         }
 
         return $profiles;
     }
 
-    protected function strategies(): array
+    protected function buildProfilesFromContests(array $trainingContests): array
     {
-        return [
-            'maturity_core' => [
-                'maturity' => 0.42,
-                'stability' => 0.12,
-                'affinity' => 0.22,
-                'return_pressure' => 0.12,
-                'persistence' => 0.08,
-                'anti_bias' => 0.04,
-            ],
-            'cycle_return' => [
-                'maturity' => 0.16,
-                'stability' => 0.08,
-                'affinity' => 0.18,
-                'return_pressure' => 0.42,
-                'persistence' => 0.08,
-                'anti_bias' => 0.08,
-            ],
-            'affinity_blocks' => [
-                'maturity' => 0.18,
-                'stability' => 0.08,
-                'affinity' => 0.46,
-                'return_pressure' => 0.12,
-                'persistence' => 0.12,
-                'anti_bias' => 0.04,
-            ],
-            'persistence_recent' => [
-                'maturity' => 0.16,
-                'stability' => 0.08,
-                'affinity' => 0.20,
-                'return_pressure' => 0.10,
-                'persistence' => 0.40,
-                'anti_bias' => 0.06,
-            ],
-            'elite_convergence' => [
-                'maturity' => 0.28,
-                'stability' => 0.10,
-                'affinity' => 0.34,
-                'return_pressure' => 0.18,
-                'persistence' => 0.08,
-                'anti_bias' => 0.02,
-            ],
-            'rupture_hunter' => [
-                'maturity' => 0.20,
-                'stability' => 0.04,
-                'affinity' => 0.26,
-                'return_pressure' => 0.28,
-                'persistence' => 0.04,
-                'anti_bias' => 0.18,
-            ],
-        ];
+        $draws = array_values(array_filter(
+            array_column($trainingContests, 'numbers'),
+            fn ($numbers) => is_array($numbers) && count($numbers) === 15
+        ));
+
+        $window40 = array_slice($draws, -40);
+        $window80 = array_slice($draws, -80);
+        $window160 = array_slice($draws, -160);
+        $lastDraw = end($draws) ?: [];
+
+        $frequency40 = $this->frequencyMap($window40);
+        $frequency80 = $this->frequencyMap($window80);
+        $frequency160 = $this->frequencyMap($window160);
+        $frequencyTotal = $this->frequencyMap($draws);
+        $delayMap = $this->delayMap($draws);
+        $cycleMap = $this->cycleMap($draws);
+        $correlationMap = $this->correlationMap($window80);
+
+        $profiles = [];
+
+        foreach (range(1, 25) as $number) {
+            $frequency =
+                (($frequency40[$number] ?? 0.0) * 0.20) +
+                (($frequency80[$number] ?? 0.0) * 0.26) +
+                (($frequency160[$number] ?? 0.0) * 0.30) +
+                (($frequencyTotal[$number] ?? 0.0) * 0.24);
+
+            $delay = (float) ($delayMap[$number] ?? 0.5);
+            $cycle = (float) ($cycleMap[$number] ?? 0.5);
+            $correlation = (float) ($correlationMap[$number] ?? 0.5);
+            $recentPresence = in_array($number, $lastDraw, true) ? 1.0 : 0.0;
+            $returnPressure = max(0.0, min(1.0, ($delay * 0.54) + ($cycle * 0.36) + ((1.0 - $frequency) * 0.10)));
+            $stability = $this->stabilityScore($frequency, $delay, $cycle);
+            $score = max(0.0, min(1.0,
+                ($frequency * 0.18) +
+                ($delay * 0.18) +
+                ($cycle * 0.20) +
+                ($correlation * 0.20) +
+                ($recentPresence * 0.04) +
+                ($returnPressure * 0.16) +
+                ($stability * 0.04)
+            ));
+
+            $profiles[$number] = [
+                'number' => $number,
+                'score' => round($score, 8),
+                'frequency' => round($frequency, 8),
+                'delay' => round($delay, 8),
+                'cycle' => round($cycle, 8),
+                'correlation' => round($correlation, 8),
+                'recent_presence' => $recentPresence,
+                'return_pressure' => round($returnPressure, 8),
+                'stability' => round($stability, 8),
+                'temperature' => $this->temperature($frequency, $delay, $cycle),
+                'line' => $this->line($number),
+                'zone' => $this->zone($number),
+            ];
+        }
+
+        return $profiles;
     }
 
-    protected function buildBaseFromStrategy(
+    protected function buildBaseFromProfiles(
         array $profiles,
         int $quantidadeDezenas,
         array $weights,
-        LotofacilConcurso $concursoBase,
-        array $patternContext = []
+        array $forcedNumbers = [],
+        array $blockedNumbers = [],
+        int $salt = 0
     ): array {
+        $weights = $this->normalizeGenericWeights($weights);
+        $forcedNumbers = $this->normalizeNumbers($forcedNumbers);
+        $blockedNumbers = $this->normalizeNumbers($blockedNumbers);
+        $selected = [];
+
+        foreach ($forcedNumbers as $number) {
+            if (count($selected) >= $quantidadeDezenas) {
+                break;
+            }
+
+            if (isset($profiles[$number]) && ! in_array($number, $blockedNumbers, true)) {
+                $selected[] = $number;
+            }
+        }
+
         $ranked = array_values($profiles);
 
-        foreach ($ranked as &$item) {
-            $number = (int) $item['number'];
+        foreach ($ranked as &$profile) {
+            $number = (int) ($profile['number'] ?? 0);
             $score = 0.0;
 
             foreach ($weights as $metric => $weight) {
-                $score += (float) ($item[$metric] ?? 0.0) * (float) $weight;
+                $score += (float) ($profile[$metric] ?? 0.0) * (float) $weight;
             }
 
-            $score += $this->controlledRotationBonus($number, $concursoBase, $quantidadeDezenas);
-            $item['_strategy_score'] = round($score, 8);
+            $score += $this->deterministicJitter($number, $salt);
+            $profile['_selection_score'] = round($score, 8);
         }
 
-        unset($item);
+        unset($profile);
 
         usort($ranked, function (array $a, array $b): int {
-            if (($a['_strategy_score'] ?? 0) === ($b['_strategy_score'] ?? 0)) {
-                return ((int) $a['number']) <=> ((int) $b['number']);
+            if (($a['_selection_score'] ?? 0.0) === ($b['_selection_score'] ?? 0.0)) {
+                return ((int) ($a['number'] ?? 0)) <=> ((int) ($b['number'] ?? 0));
             }
 
-            return ($b['_strategy_score'] ?? 0) <=> ($a['_strategy_score'] ?? 0);
+            return ($b['_selection_score'] ?? 0.0) <=> ($a['_selection_score'] ?? 0.0);
         });
 
-        $selected = [];
+        $quotas = $this->temperatureQuotas($quantidadeDezenas);
 
-        foreach ($this->temperatureQuotas($quantidadeDezenas, $patternContext) as $temperature => $quota) {
+        foreach ($quotas as $temperature => $quota) {
             $bucket = array_values(array_filter(
                 $ranked,
-                fn (array $item) => ($item['temperature'] ?? 'neutral') === $temperature
+                fn (array $profile) => ($profile['temperature'] ?? 'neutral') === $temperature
             ));
 
-            $this->fillBase($selected, $bucket, $profiles, $quantidadeDezenas, $quota);
+            $this->fillSelected(
+                selected: $selected,
+                ranked: $bucket,
+                profiles: $profiles,
+                quantidadeDezenas: $quantidadeDezenas,
+                needed: $quota,
+                blockedNumbers: $blockedNumbers,
+                relaxed: false
+            );
         }
 
-        $this->fillBase(
+        $this->fillSelected(
             selected: $selected,
             ranked: $ranked,
             profiles: $profiles,
             quantidadeDezenas: $quantidadeDezenas,
             needed: $quantidadeDezenas - count($selected),
+            blockedNumbers: $blockedNumbers,
             relaxed: true
         );
 
-        $selected = $this->repairBase($selected, $ranked, $profiles, $quantidadeDezenas);
-
+        $selected = array_slice($this->normalizeNumbers($selected), 0, $quantidadeDezenas);
         sort($selected);
 
         return $selected;
     }
 
-    protected function addAffinityClusterCandidates(
-        array $candidates,
+    protected function fillSelected(
+        array &$selected,
+        array $ranked,
         array $profiles,
         int $quantidadeDezenas,
-        array $historicalDraws,
-        array $patternContext
-    ): array {
-        $clusterBases = $this->affinityClusterService->buildClusterBases(
-            historicalDraws: $historicalDraws,
-            profiles: $profiles,
-            quantidadeDezenas: $quantidadeDezenas,
-            patternContext: $patternContext,
-            maxBases: 10
-        );
+        int $needed,
+        array $blockedNumbers = [],
+        bool $relaxed = false
+    ): void {
+        if ($needed <= 0) {
+            return;
+        }
 
-        foreach ($clusterBases as $clusterBase) {
-            $base = $this->normalizeNumbers($clusterBase['numbers'] ?? []);
+        foreach ($ranked as $profile) {
+            if (count($selected) >= $quantidadeDezenas || $needed <= 0) {
+                break;
+            }
 
-            if (count($base) !== $quantidadeDezenas) {
+            $number = (int) ($profile['number'] ?? 0);
+
+            if ($number < 1 || $number > 25) {
                 continue;
             }
 
-            $candidate = $this->makeCandidate(
-                strategy: (string) ($clusterBase['strategy'] ?? 'affinity_cluster'),
-                numbers: $base,
-                profiles: $profiles,
-                quantidadeDezenas: $quantidadeDezenas,
-                historicalDraws: $historicalDraws,
-                patternContext: $patternContext
-            );
-
-            $clusterStrength = (float) ($clusterBase['cluster_strength'] ?? 0.0);
-
-            $candidate['cluster'] = $clusterBase['cluster'] ?? [];
-            $candidate['cluster_strength'] = $clusterStrength;
-            $candidate['fitness'] += $clusterStrength * 28.0;
-
-            $candidates[] = $candidate;
-        }
-
-        return $candidates;
-    }
-
-    protected function addBlockCandidates(
-        array $candidates,
-        array $profiles,
-        int $quantidadeDezenas,
-        array $historicalDraws,
-        LotofacilConcurso $concursoBase,
-        array $patternContext
-    ): array {
-        $recentDraws = array_slice($historicalDraws, -40);
-        $blocks = $this->eliteBlocks($recentDraws);
-
-        foreach (array_slice($blocks, 0, 6) as $index => $block) {
-            $base = $this->buildBaseAroundBlock(
-                block: $block,
-                profiles: $profiles,
-                quantidadeDezenas: $quantidadeDezenas,
-                concursoBase: $concursoBase,
-                patternContext: $patternContext
-            );
-
-            if (count($base) !== $quantidadeDezenas) {
+            if (in_array($number, $selected, true) || in_array($number, $blockedNumbers, true)) {
                 continue;
             }
 
-            $candidates[] = $this->makeCandidate(
-                strategy: 'dynamic_block_' . ($index + 1),
-                numbers: $base,
-                profiles: $profiles,
-                quantidadeDezenas: $quantidadeDezenas,
-                historicalDraws: $historicalDraws,
-                patternContext: $patternContext
-            );
-        }
+            $candidate = $selected;
+            $candidate[] = $number;
+            $candidate = $this->normalizeNumbers($candidate);
 
-        return $candidates;
+            if (! $relaxed && ! $this->isStructurallyAcceptable($candidate, $profiles, $quantidadeDezenas)) {
+                continue;
+            }
+
+            $selected[] = $number;
+            $selected = $this->normalizeNumbers($selected);
+            $needed--;
+        }
     }
 
-    protected function eliteBlocks(array $draws): array
+    protected function baseHistoricalRobustness(array $base, array $historicalContests): array
     {
-        $pairs = [];
+        $draws = array_slice(array_column($historicalContests, 'numbers'), -160);
+
+        if (empty($draws)) {
+            return [
+                'avg_hits' => 0.0,
+                'coverage_11' => 0.0,
+                'coverage_12' => 0.0,
+                'coverage_13' => 0.0,
+                'coverage_14' => 0.0,
+                'min_hits' => 0,
+                'max_hits' => 0,
+            ];
+        }
+
+        $total = 0;
+        $coverage11 = 0;
+        $coverage12 = 0;
+        $coverage13 = 0;
+        $coverage14 = 0;
+        $min = 15;
+        $max = 0;
+
+        foreach ($draws as $draw) {
+            $hits = count(array_intersect($base, $draw));
+            $total += $hits;
+            $min = min($min, $hits);
+            $max = max($max, $hits);
+
+            if ($hits >= 11) {
+                $coverage11++;
+            }
+
+            if ($hits >= 12) {
+                $coverage12++;
+            }
+
+            if ($hits >= 13) {
+                $coverage13++;
+            }
+
+            if ($hits >= 14) {
+                $coverage14++;
+            }
+        }
+
+        $count = max(1, count($draws));
+
+        return [
+            'avg_hits' => round($total / $count, 8),
+            'coverage_11' => round($coverage11 / $count, 8),
+            'coverage_12' => round($coverage12 / $count, 8),
+            'coverage_13' => round($coverage13 / $count, 8),
+            'coverage_14' => round($coverage14 / $count, 8),
+            'min_hits' => $min,
+            'max_hits' => $max,
+        ];
+    }
+
+    protected function baseProfile(array $numbers, array $profiles): array
+    {
+        $numbers = $this->normalizeNumbers($numbers);
+
+        if (empty($numbers)) {
+            return [
+                'avg_score' => 0.0,
+                'entropy' => 0.0,
+                'line_balance' => 0.0,
+                'zone_balance' => 0.0,
+                'concentration_penalty' => 1.0,
+            ];
+        }
+
+        $scores = [];
+        $lines = [];
+        $zones = [];
+        $temperatures = [];
+
+        foreach ($numbers as $number) {
+            $profile = $profiles[$number] ?? [];
+
+            $scores[] = (float) ($profile['score'] ?? 0.0);
+
+            $line = (int) ($profile['line'] ?? $this->line($number));
+            $zone = (string) ($profile['zone'] ?? $this->zone($number));
+            $temperature = (string) ($profile['temperature'] ?? 'neutral');
+
+            $lines[$line] = ($lines[$line] ?? 0) + 1;
+            $zones[$zone] = ($zones[$zone] ?? 0) + 1;
+            $temperatures[$temperature] = ($temperatures[$temperature] ?? 0) + 1;
+        }
+
+        $lineBalance = $this->balanceScore($lines, count($numbers), 5);
+        $zoneBalance = $this->balanceScore($zones, count($numbers), 5);
+        $entropy = max(0.0, min(1.0,
+            ($this->entropyScore($temperatures, count($numbers)) * 0.34) +
+            ($this->entropyScore($lines, count($numbers)) * 0.33) +
+            ($this->entropyScore($zones, count($numbers)) * 0.33)
+        ));
+
+        $concentrationPenalty = max(0.0, min(1.0,
+            ((max($lines ?: [0]) / max(1, count($numbers))) * 0.55) +
+            ((max($zones ?: [0]) / max(1, count($numbers))) * 0.45)
+        ));
+
+        return [
+            'avg_score' => round(array_sum($scores) / max(1, count($scores)), 8),
+            'entropy' => round($entropy, 8),
+            'line_balance' => round($lineBalance, 8),
+            'zone_balance' => round($zoneBalance, 8),
+            'concentration_penalty' => round($concentrationPenalty, 8),
+            'line_distribution' => $lines,
+            'zone_distribution' => $zones,
+            'temperature_distribution' => $temperatures,
+        ];
+    }
+
+    protected function isBaseCommerciallyFragile(array $numbers, array $profiles, int $quantidadeDezenas): bool
+    {
+        $profile = $this->baseProfile($numbers, $profiles);
+
+        if (($profile['entropy'] ?? 0.0) < 0.70) {
+            return true;
+        }
+
+        if (($profile['line_balance'] ?? 0.0) < 0.58) {
+            return true;
+        }
+
+        if (($profile['zone_balance'] ?? 0.0) < 0.58) {
+            return true;
+        }
+
+        return false;
+    }
+
+    protected function isStructurallyAcceptable(array $numbers, array $profiles, int $quantidadeDezenas): bool
+    {
+        $numbers = $this->normalizeNumbers($numbers);
+
+        if (empty($numbers)) {
+            return true;
+        }
+
+        $lines = [];
+        $zones = [];
+        $temperatures = [];
+
+        foreach ($numbers as $number) {
+            $line = (int) ($profiles[$number]['line'] ?? $this->line($number));
+            $zone = (string) ($profiles[$number]['zone'] ?? $this->zone($number));
+            $temperature = (string) ($profiles[$number]['temperature'] ?? 'neutral');
+
+            $lines[$line] = ($lines[$line] ?? 0) + 1;
+            $zones[$zone] = ($zones[$zone] ?? 0) + 1;
+            $temperatures[$temperature] = ($temperatures[$temperature] ?? 0) + 1;
+        }
+
+        $maxLine = max($lines ?: [0]);
+        $maxZone = max($zones ?: [0]);
+        $hotCount = (int) ($temperatures['hot'] ?? 0);
+        $coldCount = (int) ($temperatures['cold'] ?? 0);
+
+        $maxLineAllowed = $quantidadeDezenas >= 19 ? 6 : 5;
+        $maxZoneAllowed = $quantidadeDezenas >= 19 ? 6 : 5;
+
+        if ($maxLine > $maxLineAllowed) {
+            return false;
+        }
+
+        if ($maxZone > $maxZoneAllowed) {
+            return false;
+        }
+
+        if ($hotCount > (int) ceil($quantidadeDezenas * 0.62)) {
+            return false;
+        }
+
+        if ($coldCount > (int) ceil($quantidadeDezenas * 0.46)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    protected function frequentRecentlyMissedNumbers(array $candidates, array $historicalDraws, array $profiles): array
+    {
+        $topBases = array_slice($candidates, 0, 5);
+        $missed = [];
+
+        foreach ($topBases as $candidate) {
+            $base = $this->normalizeNumbers($candidate['numbers'] ?? []);
+
+            foreach ($historicalDraws as $draw) {
+                $draw = $this->normalizeNumbers($draw);
+                $missing = array_values(array_diff($draw, $base));
+
+                foreach ($missing as $number) {
+                    $missed[$number] = ($missed[$number] ?? 0) + 1;
+                }
+            }
+        }
+
+        arsort($missed);
+
+        $numbers = array_keys($missed);
+
+        usort($numbers, function (int $a, int $b) use ($missed, $profiles): int {
+            if (($missed[$a] ?? 0) === ($missed[$b] ?? 0)) {
+                return ((float) ($profiles[$b]['score'] ?? 0.0)) <=> ((float) ($profiles[$a]['score'] ?? 0.0));
+            }
+
+            return ($missed[$b] ?? 0) <=> ($missed[$a] ?? 0);
+        });
+
+        return array_slice($numbers, 0, 8);
+    }
+
+    protected function injectRescueNumbers(
+        array $base,
+        array $profiles,
+        array $rescueNumbers,
+        int $quantidadeDezenas,
+        int $mutationLevel,
+        int $salt
+    ): array {
+        $base = $this->normalizeNumbers($base);
+        $rescueNumbers = $this->normalizeNumbers($rescueNumbers);
+
+        $inside = $base;
+
+        usort($inside, function (int $a, int $b) use ($profiles): int {
+            return ((float) ($profiles[$a]['score'] ?? 0.0)) <=> ((float) ($profiles[$b]['score'] ?? 0.0));
+        });
+
+        $outsideRescue = array_values(array_diff($rescueNumbers, $base));
+
+        if (empty($outsideRescue)) {
+            return $base;
+        }
+
+        $changes = min($mutationLevel, count($outsideRescue), count($inside));
+        $candidate = $base;
+
+        for ($i = 0; $i < $changes; $i++) {
+            $remove = $inside[$i] ?? null;
+            $add = $outsideRescue[$i] ?? null;
+
+            if (! $remove || ! $add) {
+                continue;
+            }
+
+            $candidate = array_values(array_diff($candidate, [$remove]));
+            $candidate[] = $add;
+            $candidate = $this->normalizeNumbers($candidate);
+        }
+
+        if (count($candidate) !== $quantidadeDezenas) {
+            return $base;
+        }
+
+        return $candidate;
+    }
+
+    protected function frequencyMap(array $draws): array
+    {
+        $count = max(1, count($draws));
+        $frequency = array_fill_keys(range(1, 25), 0.0);
+
+        foreach ($draws as $draw) {
+            foreach ($draw as $number) {
+                $frequency[(int) $number] = ($frequency[(int) $number] ?? 0.0) + 1;
+            }
+        }
+
+        foreach ($frequency as $number => $value) {
+            $frequency[$number] = $value / $count;
+        }
+
+        return $this->normalizeScores($frequency);
+    }
+
+    protected function delayMap(array $draws): array
+    {
+        $delay = array_fill_keys(range(1, 25), count($draws));
+
+        foreach (array_reverse($draws) as $distance => $draw) {
+            foreach ($draw as $number) {
+                if ($delay[(int) $number] === count($draws)) {
+                    $delay[(int) $number] = $distance;
+                }
+            }
+        }
+
+        return $this->normalizeScores($delay);
+    }
+
+    protected function cycleMap(array $draws): array
+    {
+        $window = array_slice($draws, -8);
+        $seen = [];
+
+        foreach ($window as $draw) {
+            foreach ($draw as $number) {
+                $seen[(int) $number] = ($seen[(int) $number] ?? 0) + 1;
+            }
+        }
+
+        $cycle = [];
+
+        foreach (range(1, 25) as $number) {
+            $cycle[$number] = 1.0 - min(1.0, (($seen[$number] ?? 0) / max(1, count($window))));
+        }
+
+        return $cycle;
+    }
+
+    protected function correlationMap(array $draws): array
+    {
+        $pairFrequency = [];
+        $numberScore = array_fill_keys(range(1, 25), 0.0);
 
         foreach ($draws as $draw) {
             $draw = $this->normalizeNumbers($draw);
@@ -561,426 +1263,89 @@ class FechamentoBaseCompetitionService
             for ($i = 0; $i < count($draw); $i++) {
                 for ($j = $i + 1; $j < count($draw); $j++) {
                     $key = $draw[$i] . '-' . $draw[$j];
-                    $pairs[$key] = ($pairs[$key] ?? 0) + 1;
+                    $pairFrequency[$key] = ($pairFrequency[$key] ?? 0) + 1;
                 }
             }
         }
 
-        arsort($pairs);
-
-        $blocks = [];
-
-        foreach (array_slice($pairs, 0, 25, true) as $key => $count) {
-            $numbers = array_map('intval', explode('-', $key));
-
-            foreach ($pairs as $otherKey => $otherCount) {
-                if ($otherKey === $key) {
-                    continue;
-                }
-
-                $other = array_map('intval', explode('-', $otherKey));
-                $merged = $this->normalizeNumbers(array_merge($numbers, $other));
-
-                if (count($merged) <= 5) {
-                    $numbers = $merged;
-                }
-
-                if (count($numbers) >= 5) {
-                    break;
-                }
-            }
-
-            $blockKey = $this->key($numbers);
-
-            if (! isset($blocks[$blockKey])) {
-                $blocks[$blockKey] = [
-                    'numbers' => $numbers,
-                    'strength' => $count,
-                ];
-            }
+        foreach ($pairFrequency as $key => $value) {
+            [$a, $b] = array_map('intval', explode('-', $key));
+            $numberScore[$a] += $value;
+            $numberScore[$b] += $value;
         }
 
-        usort($blocks, fn (array $a, array $b) => ($b['strength'] ?? 0) <=> ($a['strength'] ?? 0));
-
-        return array_values($blocks);
+        return $this->normalizeScores($numberScore);
     }
 
-    protected function buildBaseAroundBlock(
-        array $block,
-        array $profiles,
-        int $quantidadeDezenas,
-        LotofacilConcurso $concursoBase,
-        array $patternContext
-    ): array {
-        $selected = $this->normalizeNumbers($block['numbers'] ?? []);
-        $ranked = array_values($profiles);
-
-        foreach ($ranked as &$item) {
-            $number = (int) $item['number'];
-
-            $item['_block_score'] =
-                ((float) ($item['maturity'] ?? 0.0) * 0.26) +
-                ((float) ($item['affinity'] ?? 0.0) * 0.34) +
-                ((float) ($item['return_pressure'] ?? 0.0) * 0.22) +
-                ((float) ($item['persistence'] ?? 0.0) * 0.10) +
-                ((float) ($item['anti_bias'] ?? 0.0) * 0.08) +
-                $this->controlledRotationBonus($number, $concursoBase, $quantidadeDezenas);
-        }
-
-        unset($item);
-
-        usort($ranked, function (array $a, array $b): int {
-            if (($a['_block_score'] ?? 0) === ($b['_block_score'] ?? 0)) {
-                return ((int) $a['number']) <=> ((int) $b['number']);
-            }
-
-            return ($b['_block_score'] ?? 0) <=> ($a['_block_score'] ?? 0);
-        });
-
-        $this->fillBase(
-            selected: $selected,
-            ranked: $ranked,
-            profiles: $profiles,
-            quantidadeDezenas: $quantidadeDezenas,
-            needed: $quantidadeDezenas - count($selected),
-            relaxed: true
-        );
-
-        return $this->repairBase($selected, $ranked, $profiles, $quantidadeDezenas);
-    }
-
-    protected function fillBase(
-        array &$selected,
-        array $ranked,
-        array $profiles,
-        int $quantidadeDezenas,
-        int $needed,
-        bool $relaxed = false
-    ): void {
-        foreach ($ranked as $candidate) {
-            if ($needed <= 0 || count($selected) >= $quantidadeDezenas) {
-                break;
-            }
-
-            $number = (int) ($candidate['number'] ?? 0);
-
-            if ($number < 1 || $number > 25 || in_array($number, $selected, true)) {
-                continue;
-            }
-
-            $test = $this->normalizeNumbers(array_merge($selected, [$number]));
-
-            if (! $this->canAcceptBase($test, $profiles, $quantidadeDezenas, $relaxed)) {
-                continue;
-            }
-
-            $selected = $test;
-            $needed--;
-        }
-    }
-
-    protected function repairBase(array $selected, array $ranked, array $profiles, int $quantidadeDezenas): array
+    protected function applyPatternBias(array $weights, array $patternContext): array
     {
-        $selected = $this->normalizeNumbers($selected);
+        $regime = $patternContext['regime'] ?? null;
+        $confidence = (float) ($patternContext['confidence'] ?? 0.0);
 
-        while (count($selected) > $quantidadeDezenas) {
-            $remove = $this->weakestNumber($selected, $profiles);
-
-            if ($remove === null) {
-                break;
-            }
-
-            $selected = array_values(array_diff($selected, [$remove]));
+        if ($confidence < 0.45) {
+            return $this->normalizeGenericWeights($weights);
         }
 
-        foreach ([false, true] as $relaxed) {
-            while (count($selected) < $quantidadeDezenas) {
-                $added = false;
-
-                foreach ($ranked as $candidate) {
-                    $number = (int) ($candidate['number'] ?? 0);
-
-                    if (in_array($number, $selected, true)) {
-                        continue;
-                    }
-
-                    $test = $this->normalizeNumbers(array_merge($selected, [$number]));
-
-                    if (! $this->canAcceptBase($test, $profiles, $quantidadeDezenas, $relaxed)) {
-                        continue;
-                    }
-
-                    $selected = $test;
-                    $added = true;
-                    break;
-                }
-
-                if (! $added) {
-                    break;
-                }
-            }
+        if ($regime === 'volatile') {
+            $weights['delay'] = ($weights['delay'] ?? 0.0) + 0.04;
+            $weights['cycle'] = ($weights['cycle'] ?? 0.0) + 0.04;
+            $weights['recent_presence'] = max(0.0, ($weights['recent_presence'] ?? 0.0) - 0.04);
         }
 
-        return $selected;
+        if ($regime === 'stable') {
+            $weights['correlation'] = ($weights['correlation'] ?? 0.0) + 0.04;
+            $weights['recent_presence'] = ($weights['recent_presence'] ?? 0.0) + 0.04;
+            $weights['delay'] = max(0.0, ($weights['delay'] ?? 0.0) - 0.03);
+        }
+
+        return $this->normalizeGenericWeights($weights);
     }
 
-    protected function makeCandidate(
-        string $strategy,
-        array $numbers,
-        array $profiles,
-        int $quantidadeDezenas,
-        array $historicalDraws,
-        array $patternContext
-    ): array {
-        $numbers = $this->normalizeNumbers($numbers);
-        $profile = $this->baseProfile($numbers, $profiles);
-        $containment = $this->containmentScore($numbers, $historicalDraws, $patternContext);
-
-        return [
-            'strategy' => $strategy,
-            'numbers' => $numbers,
-            'key' => $this->key($numbers),
-            'fitness' => $this->baseFitness($numbers, $profiles, $quantidadeDezenas, $profile, $containment),
-            'profile' => $profile,
-            'containment' => $containment,
-        ];
-    }
-
-    protected function baseFitness(
-        array $base,
-        array $profiles,
-        int $quantidadeDezenas,
-        array $profile,
-        array $containment
-    ): float {
-        if (count($base) !== $quantidadeDezenas) {
-            return -9999.0;
-        }
-
-        $fitness = 0.0;
-
-        $fitness += $containment['weighted_score'] * 46.0;
-        $fitness += $containment['rate_13_plus'] * 22.0;
-        $fitness += $containment['rate_14_plus'] * 45.0;
-        $fitness += $profile['avg_maturity'] * 10.0;
-        $fitness += $profile['avg_affinity'] * 16.0;
-        $fitness += $profile['avg_return_pressure'] * 12.0;
-        $fitness += $profile['avg_anti_bias'] * 5.0;
-        $fitness += $profile['temperature_balance'] * 4.0;
-        $fitness += $profile['line_balance'] * 4.0;
-        $fitness += $profile['zone_balance'] * 3.0;
-        $fitness += $profile['entropy'] * 3.0;
-
-        if ($profile['max_line_count'] > $this->lineLimit($quantidadeDezenas) + 1) {
-            $fitness -= 8.0;
-        }
-
-        if ($profile['max_zone_count'] > $this->zoneLimit($quantidadeDezenas) + 1) {
-            $fitness -= 6.0;
-        }
-
-        return round($fitness, 8);
-    }
-
-    protected function containmentScore(array $base, array $historicalDraws, array $patternContext): array
+    protected function blendWeights(array $a, array $b, float $aWeight): array
     {
-        $draws = array_slice($historicalDraws, -80);
+        $keys = array_values(array_unique(array_merge(array_keys($a), array_keys($b))));
+        $weights = [];
 
-        if (empty($draws)) {
-            return [
-                'avg_hits' => 0.0,
-                'max_hits' => 0,
-                'rate_12_plus' => 0.0,
-                'rate_13_plus' => 0.0,
-                'rate_14_plus' => 0.0,
-                'weighted_score' => 0.0,
-            ];
+        foreach ($keys as $key) {
+            $weights[$key] = ((float) ($a[$key] ?? 0.0) * $aWeight) + ((float) ($b[$key] ?? 0.0) * (1.0 - $aWeight));
         }
 
-        $totalHits = 0;
-        $maxHits = 0;
-        $count12 = 0;
-        $count13 = 0;
-        $count14 = 0;
-        $weighted = 0.0;
-        $weightTotal = 0.0;
-
-        foreach ($draws as $index => $draw) {
-            $hits = count(array_intersect($base, $draw));
-            $ageWeight = ($index + 1) / count($draws);
-
-            $totalHits += $hits;
-            $maxHits = max($maxHits, $hits);
-
-            if ($hits >= 12) {
-                $count12++;
-            }
-
-            if ($hits >= 13) {
-                $count13++;
-            }
-
-            if ($hits >= 14) {
-                $count14++;
-            }
-
-            $hitScore = match (true) {
-                $hits >= 15 => 1.00,
-                $hits === 14 => 0.88,
-                $hits === 13 => 0.58,
-                $hits === 12 => 0.30,
-                $hits === 11 => 0.12,
-                default => 0.0,
-            };
-
-            $weighted += $hitScore * $ageWeight;
-            $weightTotal += $ageWeight;
-        }
-
-        $total = count($draws);
-
-        return [
-            'avg_hits' => round($totalHits / $total, 8),
-            'max_hits' => $maxHits,
-            'rate_12_plus' => round($count12 / $total, 8),
-            'rate_13_plus' => round($count13 / $total, 8),
-            'rate_14_plus' => round($count14 / $total, 8),
-            'weighted_score' => round($weighted / max(0.0001, $weightTotal), 8),
-        ];
+        return $this->normalizeGenericWeights($weights);
     }
 
-    protected function baseProfile(array $base, array $profiles): array
+    protected function blendWalkForwardMetrics(array $a, array $b): array
     {
-        $base = $this->normalizeNumbers($base);
+        $keys = array_values(array_unique(array_merge(array_keys($a), array_keys($b))));
+        $result = [];
 
-        $maturity = [];
-        $stability = [];
-        $affinity = [];
-        $returnPressure = [];
-        $antiBias = [];
-        $temperatures = ['hot' => 0, 'neutral' => 0, 'cold' => 0];
-        $lines = [];
-        $zones = [];
-
-        foreach ($base as $number) {
-            $profile = $profiles[$number] ?? [];
-
-            $maturity[] = (float) ($profile['maturity'] ?? 0.0);
-            $stability[] = (float) ($profile['stability'] ?? 0.0);
-            $affinity[] = (float) ($profile['affinity'] ?? 0.0);
-            $returnPressure[] = (float) ($profile['return_pressure'] ?? 0.0);
-            $antiBias[] = (float) ($profile['anti_bias'] ?? 0.0);
-
-            $temperature = $profile['temperature'] ?? 'neutral';
-            $temperatures[$temperature] = ($temperatures[$temperature] ?? 0) + 1;
-
-            $line = $this->line($number);
-            $zone = $this->zone($number);
-
-            $lines[$line] = ($lines[$line] ?? 0) + 1;
-            $zones[$zone] = ($zones[$zone] ?? 0) + 1;
-        }
-
-        return [
-            'avg_maturity' => round($this->avg($maturity), 8),
-            'avg_stability' => round($this->avg($stability), 8),
-            'avg_affinity' => round($this->avg($affinity), 8),
-            'avg_return_pressure' => round($this->avg($returnPressure), 8),
-            'avg_anti_bias' => round($this->avg($antiBias), 8),
-            'hot_count' => (int) ($temperatures['hot'] ?? 0),
-            'neutral_count' => (int) ($temperatures['neutral'] ?? 0),
-            'cold_count' => (int) ($temperatures['cold'] ?? 0),
-            'temperature_balance' => round($this->temperatureBalance($temperatures), 8),
-            'line_balance' => round($this->distributionBalance($lines, 5), 8),
-            'zone_balance' => round($this->distributionBalance($zones, 3), 8),
-            'entropy' => round($this->entropyScore($lines, 5), 8),
-            'max_line_count' => empty($lines) ? 0 : max($lines),
-            'max_zone_count' => empty($zones) ? 0 : max($zones),
-        ];
-    }
-
-    protected function canAcceptBase(array $base, array $profiles, int $quantidadeDezenas, bool $relaxed = false): bool
-    {
-        $lines = [];
-        $zones = [];
-        $temperatures = ['hot' => 0, 'neutral' => 0, 'cold' => 0];
-
-        foreach ($base as $number) {
-            $line = $this->line($number);
-            $zone = $this->zone($number);
-            $temperature = $profiles[$number]['temperature'] ?? 'neutral';
-
-            $lines[$line] = ($lines[$line] ?? 0) + 1;
-            $zones[$zone] = ($zones[$zone] ?? 0) + 1;
-            $temperatures[$temperature] = ($temperatures[$temperature] ?? 0) + 1;
-        }
-
-        $lineLimit = $this->lineLimit($quantidadeDezenas) + ($relaxed ? 1 : 0);
-        $zoneLimit = $this->zoneLimit($quantidadeDezenas) + ($relaxed ? 1 : 0);
-        $temperatureLimits = $this->temperatureLimits($quantidadeDezenas, $relaxed);
-
-        if (! empty($lines) && max($lines) > $lineLimit) {
-            return false;
-        }
-
-        if (! empty($zones) && max($zones) > $zoneLimit) {
-            return false;
-        }
-
-        foreach ($temperatureLimits as $temperature => $limit) {
-            if (($temperatures[$temperature] ?? 0) > $limit) {
-                return false;
+        foreach ($keys as $key) {
+            if (is_numeric($a[$key] ?? null) || is_numeric($b[$key] ?? null)) {
+                $result[$key] = (((float) ($a[$key] ?? 0.0)) + ((float) ($b[$key] ?? 0.0))) / 2;
             }
         }
 
-        return true;
+        return $result;
     }
 
-    protected function applyPatternBias(array $weights, string $strategyName, array $patternContext): array
+    protected function normalizeGenericWeights(array $weights): array
     {
-        $bias = (float) (($patternContext['strategy_bias'][$strategyName] ?? 1.0));
+        $clean = [];
 
-        foreach ($weights as $metric => $weight) {
-            $weights[$metric] = (float) $weight * $bias;
+        foreach ($weights as $key => $value) {
+            $clean[$key] = max(0.0, (float) $value);
         }
 
-        $total = array_sum($weights);
+        $sum = array_sum($clean);
 
-        if ($total <= 0) {
-            return $weights;
+        if ($sum <= 0) {
+            return $clean;
         }
 
-        foreach ($weights as $metric => $weight) {
-            $weights[$metric] = $weight / $total;
+        foreach ($clean as $key => $value) {
+            $clean[$key] = $value / $sum;
         }
 
-        return $weights;
-    }
-
-    protected function temperatureQuotas(int $quantidadeDezenas, array $patternContext = []): array
-    {
-        $bias = $patternContext['temperature_bias'] ?? [];
-
-        if (! empty($bias)) {
-            $hot = (int) round($quantidadeDezenas * (float) ($bias['hot'] ?? 0.40));
-            $cold = (int) round($quantidadeDezenas * (float) ($bias['cold'] ?? 0.17));
-            $neutral = $quantidadeDezenas - $hot - $cold;
-
-            return [
-                'hot' => max(3, $hot),
-                'neutral' => max(3, $neutral),
-                'cold' => max(1, $cold),
-            ];
-        }
-
-        return match ($quantidadeDezenas) {
-            16 => ['hot' => 6, 'neutral' => 7, 'cold' => 3],
-            17 => ['hot' => 7, 'neutral' => 7, 'cold' => 3],
-            18 => ['hot' => 7, 'neutral' => 8, 'cold' => 3],
-            19 => ['hot' => 8, 'neutral' => 8, 'cold' => 3],
-            20 => ['hot' => 8, 'neutral' => 9, 'cold' => 3],
-            default => ['hot' => 7, 'neutral' => 8, 'cold' => 3],
-        };
+        return $clean;
     }
 
     protected function uniqueCandidates(array $candidates): array
@@ -988,9 +1353,16 @@ class FechamentoBaseCompetitionService
         $unique = [];
 
         foreach ($candidates as $candidate) {
-            $key = $candidate['key'];
+            $numbers = $this->normalizeNumbers($candidate['numbers'] ?? []);
+            $key = $this->key($numbers);
 
-            if (! isset($unique[$key]) || $candidate['fitness'] > $unique[$key]['fitness']) {
+            if ($key === '') {
+                continue;
+            }
+
+            if (! isset($unique[$key]) || (($candidate['fitness'] ?? 0.0) > ($unique[$key]['fitness'] ?? 0.0))) {
+                $candidate['numbers'] = $numbers;
+                $candidate['key'] = $key;
                 $unique[$key] = $candidate;
             }
         }
@@ -998,288 +1370,213 @@ class FechamentoBaseCompetitionService
         return array_values($unique);
     }
 
-    protected function weakestNumber(array $selected, array $profiles): ?int
+    protected function walkForwardStability(array $hits): float
     {
-        if (empty($selected)) {
-            return null;
+        if (empty($hits)) {
+            return 0.0;
         }
 
-        usort($selected, fn (int $a, int $b) => ($profiles[$a]['score'] ?? 0.0) <=> ($profiles[$b]['score'] ?? 0.0));
+        $avg = array_sum($hits) / count($hits);
+        $variance = 0.0;
 
-        return (int) $selected[0];
+        foreach ($hits as $hit) {
+            $variance += (($hit - $avg) ** 2);
+        }
+
+        $variance = $variance / max(1, count($hits));
+        $std = sqrt($variance);
+
+        return max(0.0, min(1.0, 1.0 - ($std / 5.0)));
     }
 
-    protected function extractHistoricalDraws(Collection $historico, LotofacilConcurso $concursoBase): array
+    protected function recentEvaluationWeight(int $index, int $total): float
     {
-        $draws = [];
+        $position = $index / max(1, $total);
 
-        foreach ($historico as $concurso) {
-            $numeroConcurso = $this->resolveContestNumber($concurso);
-
-            if ($numeroConcurso !== null && $numeroConcurso > (int) $concursoBase->concurso) {
-                continue;
-            }
-
-            $numbers = $this->extractNumbers($concurso);
-
-            if (count($numbers) === 15) {
-                $draws[] = $numbers;
-            }
-        }
-
-        return $draws;
+        return 0.65 + ($position * 0.35);
     }
 
-    protected function resolveContestNumber(LotofacilConcurso|array $concurso): ?int
+    protected function temperatureQuotas(int $quantidadeDezenas): array
     {
-        if (is_array($concurso)) {
-            foreach (['concurso', 'numero', 'id'] as $field) {
-                if (isset($concurso[$field]) && is_numeric($concurso[$field])) {
-                    return (int) $concurso[$field];
-                }
-            }
-
-            return null;
-        }
-
-        return isset($concurso->concurso) ? (int) $concurso->concurso : null;
-    }
-
-    protected function normalizeScores(array $scores): array
-    {
-        $normalized = [];
-        $values = [];
-
-        foreach (range(1, 25) as $number) {
-            $values[$number] = (float) ($scores[$number] ?? 0.0);
-        }
-
-        $min = min($values);
-        $max = max($values);
-
-        foreach ($values as $number => $value) {
-            if ($max <= $min) {
-                $normalized[$number] = 0.5;
-                continue;
-            }
-
-            $normalized[$number] = ($value - $min) / ($max - $min);
-        }
-
-        return $normalized;
-    }
-
-    protected function averageCorrelation(int $number, array $pairScores): float
-    {
-        $total = 0.0;
-        $count = 0;
-
-        foreach (range(1, 25) as $other) {
-            if ($other === $number) {
-                continue;
-            }
-
-            $total += (float) ($pairScores[$number][$other] ?? $pairScores[$other][$number] ?? 0.0);
-            $count++;
-        }
-
-        if ($count === 0) {
-            return 0.5;
-        }
-
-        return $this->sigmoid($total / $count);
-    }
-
-    protected function affinityScore(int $number, array $pairScores, array $lastDraw): float
-    {
-        $total = 0.0;
-        $count = 0;
-
-        foreach ($lastDraw as $other) {
-            $other = (int) $other;
-
-            if ($other === $number) {
-                continue;
-            }
-
-            $total += (float) ($pairScores[$number][$other] ?? $pairScores[$other][$number] ?? 0.0);
-            $count++;
-        }
-
-        if ($count === 0) {
-            return 0.5;
-        }
-
-        return $this->sigmoid($total / $count);
+        return match ($quantidadeDezenas) {
+            16 => ['hot' => 6, 'neutral' => 6, 'cold' => 4],
+            17 => ['hot' => 7, 'neutral' => 6, 'cold' => 4],
+            18 => ['hot' => 7, 'neutral' => 7, 'cold' => 4],
+            19 => ['hot' => 8, 'neutral' => 7, 'cold' => 4],
+            20 => ['hot' => 8, 'neutral' => 8, 'cold' => 4],
+            default => ['hot' => 7, 'neutral' => 7, 'cold' => 4],
+        };
     }
 
     protected function stabilityScore(float $frequency, float $delay, float $cycle): float
     {
-        $frequencyStability = 1.0 - min(1.0, abs($frequency - 0.55) / 0.55);
-        $delayStability = 1.0 - min(1.0, abs($delay - 0.45) / 0.55);
-        $cycleStability = 1.0 - min(1.0, abs($cycle - 0.50) / 0.50);
+        $centerDistance =
+            abs($frequency - 0.55) +
+            abs($delay - 0.45) +
+            abs($cycle - 0.50);
 
-        return max(0.0, min(1.0,
-            ($frequencyStability * 0.42) +
-            ($delayStability * 0.28) +
-            ($cycleStability * 0.30)
-        ));
-    }
-
-    protected function controlledRotationBonus(int $number, LotofacilConcurso $concursoBase, int $quantidadeDezenas): float
-    {
-        $seed = (((int) $concursoBase->concurso * 19) + ($number * 23) + ($quantidadeDezenas * 11)) % 100;
-
-        return match (true) {
-            $seed <= 8 => -0.008,
-            $seed <= 22 => -0.004,
-            $seed <= 68 => 0.0,
-            $seed <= 86 => 0.004,
-            default => 0.008,
-        };
-    }
-
-    protected function extremeBiasPenalty(float $frequency, float $delay, float $cycle): float
-    {
-        $penalty = 0.0;
-
-        if ($frequency >= 0.94 && $delay <= 0.06) {
-            $penalty += 0.025;
-        }
-
-        if ($frequency <= 0.05 && $delay >= 0.95) {
-            $penalty += 0.025;
-        }
-
-        if ($cycle <= 0.04 || $cycle >= 0.96) {
-            $penalty += 0.015;
-        }
-
-        return $penalty;
+        return max(0.0, min(1.0, 1.0 - ($centerDistance / 3.0)));
     }
 
     protected function temperature(float $frequency, float $delay, float $cycle): string
     {
-        $temperatureScore = ($frequency * 0.55) + ((1.0 - $delay) * 0.25) + ($cycle * 0.20);
+        $heat = ($frequency * 0.46) + ((1.0 - $delay) * 0.24) + ($cycle * 0.30);
 
-        if ($temperatureScore >= 0.66) {
+        if ($heat >= 0.62) {
             return 'hot';
         }
 
-        if ($temperatureScore <= 0.38) {
+        if ($heat <= 0.38) {
             return 'cold';
         }
 
         return 'neutral';
     }
 
-    protected function temperatureLimits(int $quantidadeDezenas, bool $relaxed = false): array
+    protected function averageCorrelation(int $number, array $pairScores): float
     {
-        $extra = $relaxed ? 1 : 0;
+        $values = [];
 
-        return match ($quantidadeDezenas) {
-            16 => ['hot' => 9 + $extra, 'neutral' => 11 + $extra, 'cold' => 6 + $extra],
-            17 => ['hot' => 10 + $extra, 'neutral' => 11 + $extra, 'cold' => 6 + $extra],
-            18 => ['hot' => 11 + $extra, 'neutral' => 12 + $extra, 'cold' => 7 + $extra],
-            19 => ['hot' => 11 + $extra, 'neutral' => 12 + $extra, 'cold' => 7 + $extra],
-            20 => ['hot' => 12 + $extra, 'neutral' => 13 + $extra, 'cold' => 8 + $extra],
-            default => ['hot' => 11 + $extra, 'neutral' => 12 + $extra, 'cold' => 7 + $extra],
-        };
+        foreach ($pairScores as $key => $score) {
+            $parts = array_map('intval', explode('-', (string) $key));
+
+            if (count($parts) !== 2) {
+                continue;
+            }
+
+            if ($parts[0] === $number || $parts[1] === $number) {
+                $values[] = (float) $score;
+            }
+        }
+
+        if (empty($values)) {
+            return 0.5;
+        }
+
+        return max(0.0, min(1.0, array_sum($values) / count($values)));
     }
 
-    protected function lineLimit(int $quantidadeDezenas): int
+    protected function balanceScore(array $distribution, int $total, int $groups): float
     {
-        return match ($quantidadeDezenas) {
-            16 => 4,
-            17 => 5,
-            18 => 5,
-            19 => 6,
-            20 => 6,
-            default => 5,
-        };
-    }
-
-    protected function zoneLimit(int $quantidadeDezenas): int
-    {
-        return match ($quantidadeDezenas) {
-            16 => 8,
-            17 => 8,
-            18 => 9,
-            19 => 9,
-            20 => 10,
-            default => 9,
-        };
-    }
-
-    protected function temperatureBalance(array $temperatures): float
-    {
-        $total = array_sum($temperatures);
-
-        if ($total <= 0) {
+        if ($total <= 0 || $groups <= 0) {
             return 0.0;
         }
 
-        $hot = ($temperatures['hot'] ?? 0) / $total;
-        $neutral = ($temperatures['neutral'] ?? 0) / $total;
-        $cold = ($temperatures['cold'] ?? 0) / $total;
-
-        $distance = abs($hot - 0.42) + abs($neutral - 0.41) + abs($cold - 0.17);
-
-        return max(0.0, 1.0 - ($distance / 1.20));
-    }
-
-    protected function distributionBalance(array $distribution, int $buckets): float
-    {
-        $total = array_sum($distribution);
-
-        if ($total <= 0 || $buckets <= 0) {
-            return 0.0;
-        }
-
-        $expected = $total / $buckets;
+        $expected = $total / $groups;
         $distance = 0.0;
 
-        for ($i = 1; $i <= $buckets; $i++) {
+        for ($i = 1; $i <= $groups; $i++) {
             $distance += abs(($distribution[$i] ?? 0) - $expected);
         }
 
-        return max(0.0, 1.0 - ($distance / max(1.0, $total)));
+        return max(0.0, min(1.0, 1.0 - ($distance / max(1.0, $total))));
     }
 
-    protected function entropyScore(array $distribution, int $buckets): float
+    protected function entropyScore(array $distribution, int $total): float
     {
-        $total = array_sum($distribution);
-
-        if ($total <= 0 || $buckets <= 1) {
+        if ($total <= 0 || empty($distribution)) {
             return 0.0;
         }
 
         $entropy = 0.0;
+        $groups = count($distribution);
 
         foreach ($distribution as $count) {
-            if ($count <= 0) {
+            $p = $count / $total;
+
+            if ($p > 0) {
+                $entropy -= $p * log($p);
+            }
+        }
+
+        $maxEntropy = log(max(2, $groups));
+
+        return max(0.0, min(1.0, $entropy / $maxEntropy));
+    }
+
+    protected function normalizeScores(array $scores): array
+    {
+        $normalized = [];
+
+        foreach ($scores as $key => $value) {
+            $normalized[(int) $key] = (float) $value;
+        }
+
+        if (empty($normalized)) {
+            return array_fill_keys(range(1, 25), 0.5);
+        }
+
+        $min = min($normalized);
+        $max = max($normalized);
+
+        foreach (range(1, 25) as $number) {
+            $value = (float) ($normalized[$number] ?? 0.0);
+
+            if ($max <= $min) {
+                $normalized[$number] = 0.5;
+            } else {
+                $normalized[$number] = ($value - $min) / ($max - $min);
+            }
+        }
+
+        return $normalized;
+    }
+
+    protected function extractHistoricalContests(Collection $historico, LotofacilConcurso $concursoBase): array
+    {
+        return $historico
+            ->filter(function ($concurso) use ($concursoBase) {
+                $numero = is_array($concurso)
+                    ? (int) ($concurso['concurso'] ?? 0)
+                    : (int) ($concurso->concurso ?? 0);
+
+                return $numero <= (int) $concursoBase->concurso;
+            })
+            ->sortBy(function ($concurso) {
+                return is_array($concurso)
+                    ? (int) ($concurso['concurso'] ?? 0)
+                    : (int) ($concurso->concurso ?? 0);
+            })
+            ->map(function ($concurso) {
+                return [
+                    'concurso' => is_array($concurso)
+                        ? (int) ($concurso['concurso'] ?? 0)
+                        : (int) ($concurso->concurso ?? 0),
+                    'numbers' => $this->extractNumbers($concurso),
+                ];
+            })
+            ->filter(fn (array $item) => count($item['numbers'] ?? []) === 15)
+            ->values()
+            ->all();
+    }
+
+    protected function extractNumbers($concurso): array
+    {
+        $numbers = [];
+
+        for ($i = 1; $i <= 15; $i++) {
+            $field = 'bola' . $i;
+
+            if (is_array($concurso)) {
+                if (isset($concurso[$field])) {
+                    $numbers[] = (int) $concurso[$field];
+                }
+
                 continue;
             }
 
-            $p = $count / $total;
-            $entropy -= $p * log($p);
+            if (isset($concurso->{$field})) {
+                $numbers[] = (int) $concurso->{$field};
+            }
         }
 
-        return max(0.0, min(1.0, $entropy / log($buckets)));
-    }
-
-    protected function avg(array $values): float
-    {
-        if (empty($values)) {
-            return 0.0;
-        }
-
-        return array_sum($values) / count($values);
+        return $this->normalizeNumbers($numbers);
     }
 
     protected function normalizeNumbers(array $numbers): array
     {
         $numbers = array_values(array_unique(array_map('intval', $numbers)));
+        $numbers = array_values(array_filter($numbers, fn (int $number) => $number >= 1 && $number <= 25));
         sort($numbers);
 
         return $numbers;
@@ -1290,97 +1587,24 @@ class FechamentoBaseCompetitionService
         return implode('-', $this->normalizeNumbers($numbers));
     }
 
-    protected function extractNumbers(LotofacilConcurso|array $concurso): array
+    protected function deterministicJitter(int $number, int $salt): float
     {
-        if (is_array($concurso)) {
-            if (isset($concurso['dezenas']) && is_array($concurso['dezenas'])) {
-                return collect($concurso['dezenas'])
-                    ->map(fn ($n) => (int) $n)
-                    ->filter(fn ($n) => $n > 0)
-                    ->unique()
-                    ->sort()
-                    ->values()
-                    ->toArray();
-            }
-
-            $numbers = [];
-
-            for ($i = 1; $i <= 15; $i++) {
-                $field = 'bola' . $i;
-
-                if (isset($concurso[$field]) && is_numeric($concurso[$field])) {
-                    $numbers[] = (int) $concurso[$field];
-                }
-            }
-
-            if (count($numbers) === 15) {
-                return collect($numbers)
-                    ->filter(fn ($n) => $n > 0)
-                    ->unique()
-                    ->sort()
-                    ->values()
-                    ->toArray();
-            }
-
-            return collect($concurso)
-                ->filter(fn ($value, $key) => is_numeric($value) && preg_match('/^(bola\d+|dezena\d+|d\d+)$/', (string) $key))
-                ->map(fn ($n) => (int) $n)
-                ->filter(fn ($n) => $n > 0 && $n <= 25)
-                ->unique()
-                ->sort()
-                ->values()
-                ->toArray();
-        }
-
-        $numbers = [];
-
-        for ($i = 1; $i <= 15; $i++) {
-            $field = 'bola' . $i;
-
-            if (isset($concurso->{$field})) {
-                $numbers[] = (int) $concurso->{$field};
-            }
-        }
-
-        return collect($numbers)
-            ->filter(fn ($n) => $n > 0)
-            ->unique()
-            ->sort()
-            ->values()
-            ->toArray();
-    }
-
-    protected function sigmoid(float $value): float
-    {
-        return 1.0 / (1.0 + exp(-$value));
+        return ((crc32($number . '|' . $salt) % 1000) / 1000) * 0.006;
     }
 
     protected function line(int $number): int
     {
-        return (int) floor(($number - 1) / 5) + 1;
+        return (int) ceil($number / 5);
     }
 
-    protected function zone(int $number): int
+    protected function zone(int $number): string
     {
-        if ($number <= 8) {
-            return 1;
-        }
-
-        if ($number <= 17) {
-            return 2;
-        }
-
-        return 3;
-    }
-
-    protected function isEdge(int $number): bool
-    {
-        return in_array($number, [
-            1, 2, 3, 4, 5,
-            6, 10,
-            11, 15,
-            16, 20,
-            21, 22, 23, 24, 25,
-        ], true);
+        return match (true) {
+            $number <= 5 => 'zone_1',
+            $number <= 10 => 'zone_2',
+            $number <= 15 => 'zone_3',
+            $number <= 20 => 'zone_4',
+            default => 'zone_5',
+        };
     }
 }

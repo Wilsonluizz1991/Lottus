@@ -14,7 +14,7 @@
             <div class="lottus-sidebar-brand">
                 <div class="lottus-sidebar-brand-mark">L</div>
                 <div class="lottus-sidebar-brand-text">
-                    <div class="lottus-sidebar-brand-title">A Lottus</div>
+                    <div class="lottus-sidebar-brand-title">Lottus</div>
                     <div class="lottus-sidebar-brand-subtitle">Navegação rápida</div>
                 </div>
             </div>

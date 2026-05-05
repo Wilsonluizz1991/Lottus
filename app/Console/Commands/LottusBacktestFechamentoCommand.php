@@ -25,8 +25,9 @@ class LottusBacktestFechamentoCommand extends Command
                             {fim : Concurso final}
                             {--dezenas=18 : Quantidade de dezenas do fechamento (16-20)}
                             {--jogos= : Quantidade final de jogos}
-                            {--bases=6 : Quantidade de bases candidatas testadas por concurso}
-                            {--diagnostico=1 : Mostrar RAW vs SELECTED}';
+                            {--bases=12 : Quantidade de bases candidatas testadas por concurso}
+                            {--diagnostico=1 : Mostrar RAW vs SELECTED}
+                            {--score-diagnostico=1 : Mostrar comparação detalhada do score RAW vs SELECTED}';
 
     protected $description = 'Backtest do Fechamento Inteligente com foco total em 14+';
 
@@ -55,6 +56,7 @@ class LottusBacktestFechamentoCommand extends Command
         $quantidadeDezenas = (int) $this->option('dezenas');
         $quantidadeBases = max(1, (int) $this->option('bases'));
         $diagnostico = (bool) ((int) $this->option('diagnostico'));
+        $scoreDiagnostico = (bool) ((int) $this->option('score-diagnostico'));
 
         if ($quantidadeDezenas < 16 || $quantidadeDezenas > 20) {
             $this->error('Quantidade de dezenas deve ser entre 16 e 20.');
@@ -103,6 +105,7 @@ class LottusBacktestFechamentoCommand extends Command
         ];
 
         $diagnosticos = [];
+        $scoreDiagnosticos = [];
 
         for ($concurso = $inicio + 1; $concurso <= $fim; $concurso++) {
             $baseNumero = $concurso - 1;
@@ -116,7 +119,6 @@ class LottusBacktestFechamentoCommand extends Command
 
             try {
                 $resultadoReal = $this->extractNumbers($concursoAlvo);
-
                 $historico = $this->historicalDataService->getUntilContest($baseNumero);
 
                 if ($historico->isEmpty()) {
@@ -139,33 +141,49 @@ class LottusBacktestFechamentoCommand extends Command
                     concursoBase: $concursoBase
                 );
 
-                $dezenasBaseInicial = $this->candidateSelector->select(
-                    $quantidadeDezenas,
-                    $frequency,
-                    $delay,
-                    $correlation,
-                    $structure,
-                    $cycle,
-                    $concursoBase
+                $basesPrimarias = $this->candidateSelector->selectMany(
+                    quantidadeDezenas: $quantidadeDezenas,
+                    frequencyContext: $frequency,
+                    delayContext: $delay,
+                    correlationContext: $correlation,
+                    structureContext: $structure,
+                    cycleContext: $cycle,
+                    concursoBase: $concursoBase,
+                    limit: max($quantidadeBases, 12)
                 );
 
-                if (count($dezenasBaseInicial) !== $quantidadeDezenas) {
+                if (empty($basesPrimarias)) {
                     continue;
                 }
 
-                $basesCandidatas = $this->resolveBasesCandidatas(
-                    dezenasBaseInicial: $dezenasBaseInicial,
-                    quantidadeDezenas: $quantidadeDezenas,
-                    historico: $historico,
-                    frequency: $frequency,
-                    delay: $delay,
-                    correlation: $correlation,
-                    structure: $structure,
-                    cycle: $cycle,
-                    concursoBase: $concursoBase,
-                    patternContext: $patternContext,
-                    quantidadeBases: $quantidadeBases
-                );
+                $basesCandidatas = [];
+
+                foreach ($basesPrimarias as $basePrimaria) {
+                    if (count($basePrimaria) !== $quantidadeDezenas) {
+                        continue;
+                    }
+
+                    $basesSelecionadas = $this->resolveBasesCandidatas(
+                        dezenasBaseInicial: $basePrimaria,
+                        quantidadeDezenas: $quantidadeDezenas,
+                        historico: $historico,
+                        frequency: $frequency,
+                        delay: $delay,
+                        correlation: $correlation,
+                        structure: $structure,
+                        cycle: $cycle,
+                        concursoBase: $concursoBase,
+                        patternContext: $patternContext,
+                        quantidadeBases: max(3, (int) ceil($quantidadeBases / 2))
+                    );
+
+                    foreach ($basesSelecionadas as $baseSelecionada) {
+                        $basesCandidatas[] = $baseSelecionada;
+                    }
+                }
+
+                $basesCandidatas = $this->normalizeBases($basesCandidatas, $quantidadeDezenas);
+                $basesCandidatas = array_slice($basesCandidatas, 0, max($quantidadeBases, 12));
 
                 if (empty($basesCandidatas)) {
                     continue;
@@ -197,6 +215,7 @@ class LottusBacktestFechamentoCommand extends Command
 
                 $rawBest = $this->bestHit($scored, $resultadoReal);
                 $selectedBest = $this->bestHit($selected, $resultadoReal);
+                $rawDiagnostics = $this->rawBestDiagnostics($rawBest, $scored, $selected);
 
                 if ($rawBest['acertos'] >= 11 && $rawBest['acertos'] <= 15) {
                     $rawStats[$rawBest['acertos']]++;
@@ -236,15 +255,48 @@ class LottusBacktestFechamentoCommand extends Command
                     ];
                 }
 
-                if ($diagnostico && ($loss > 0 || $rawBest['acertos'] >= 14 || $selectedBest['acertos'] >= 14)) {
+                if ($diagnostico && ($loss > 0 || $rawBest['acertos'] >= 14 || $selectedBest['acertos'] >= 14 || $selectedBest['acertos'] <= 11)) {
                     $diagnosticos[] = [
                         $concurso,
                         $rawBest['acertos'],
                         $selectedBest['acertos'],
                         $loss,
                         $portfolio['base_index'],
+                        $rawDiagnostics['raw_rank'],
+                        $rawDiagnostics['raw_score'],
+                        $rawDiagnostics['raw_normalized_score'],
+                        $rawDiagnostics['selected_contains_raw'] ? 'SIM' : 'NÃO',
+                        implode(', ', $rawBest['jogo']),
                         implode(', ', $dezenasBase),
                     ];
+                }
+
+                if ($scoreDiagnostico && ($loss > 0 || $rawBest['acertos'] >= 14 || $selectedBest['acertos'] >= 14)) {
+                    $rawScoreRow = $this->scoreComparisonRow(
+                        concurso: $concurso,
+                        tipo: 'RAW',
+                        hitData: $rawBest,
+                        scored: $scored,
+                        selected: $selected,
+                        resultadoReal: $resultadoReal
+                    );
+
+                    $selectedScoreRow = $this->scoreComparisonRow(
+                        concurso: $concurso,
+                        tipo: 'SELECTED',
+                        hitData: $selectedBest,
+                        scored: $scored,
+                        selected: $selected,
+                        resultadoReal: $resultadoReal
+                    );
+
+                    if (! empty($rawScoreRow)) {
+                        $scoreDiagnosticos[] = $rawScoreRow;
+                    }
+
+                    if (! empty($selectedScoreRow)) {
+                        $scoreDiagnosticos[] = $selectedScoreRow;
+                    }
                 }
             } catch (\Throwable $e) {
                 $this->warn("Erro concurso {$concurso}: {$e->getMessage()}");
@@ -292,8 +344,54 @@ class LottusBacktestFechamentoCommand extends Command
             $this->info('Diagnóstico RAW vs SELECTED');
 
             $this->table(
-                ['Concurso', 'RAW', 'SELECTED', 'LOSS', 'Base #', 'Dezenas Base'],
+                [
+                    'Concurso',
+                    'RAW',
+                    'SELECTED',
+                    'LOSS',
+                    'Base #',
+                    'RAW Rank',
+                    'RAW Score',
+                    'RAW Norm',
+                    'RAW no SELECTED?',
+                    'RAW Jogo',
+                    'Dezenas Base',
+                ],
                 $diagnosticos
+            );
+        }
+
+        if ($scoreDiagnostico && ! empty($scoreDiagnosticos)) {
+            $this->newLine();
+            $this->info('Diagnóstico de Score RAW vs SELECTED');
+
+            $this->table(
+                [
+                    'Concurso',
+                    'Tipo',
+                    'Hits',
+                    'Rank',
+                    'Score',
+                    'Base',
+                    'Elite',
+                    'Penalty',
+                    'Freq',
+                    'Delay',
+                    'Cycle',
+                    'Corr',
+                    'Struct',
+                    'Survival',
+                    'Rep',
+                    'CycleHits',
+                    'Soma',
+                    'Ímpares',
+                    'Seq',
+                    'Moldura',
+                    'Cluster',
+                    'No SELECTED?',
+                    'Jogo',
+                ],
+                $scoreDiagnosticos
             );
         }
 
@@ -438,10 +536,10 @@ class LottusBacktestFechamentoCommand extends Command
     }
 
     protected function portfolioScore(
-        array $selected,
-        array $rawBest,
-        array $selectedBest,
-        array $resultadoReal
+    array $selected,
+    array $rawBest,
+    array $selectedBest,
+    array $resultadoReal
     ): float {
         $counts = [
             11 => 0,
@@ -460,14 +558,195 @@ class LottusBacktestFechamentoCommand extends Command
             }
         }
 
+        $rawHits = (int) ($rawBest['acertos'] ?? 0);
+        $selectedHits = (int) ($selectedBest['acertos'] ?? 0);
+
+        $loss = max(0, $rawHits - $selectedHits);
+
+        // 🔥 PENALIDADE SOBERANA
+        $lossPenalty = 0;
+
+        if ($loss > 0) {
+            $lossPenalty = $loss * 50000; // dominante
+        }
+
+        // 🔥 PROTEÇÃO ABSOLUTA DE 14+
+        if ($rawHits >= 14 && $selectedHits < $rawHits) {
+            $lossPenalty += 200000; // praticamente elimina a base
+        }
+
         return
             ($counts[15] * 100000.0) +
-            ($counts[14] * 18000.0) +
-            ($counts[13] * 900.0) +
-            ($counts[12] * 40.0) +
-            ($counts[11] * 4.0) +
-            ((int) ($selectedBest['acertos'] ?? 0) * 120.0) +
-            ((int) ($rawBest['acertos'] ?? 0) * 25.0);
+            ($counts[14] * 20000.0) +
+            ($counts[13] * 1000.0) +
+            ($counts[12] * 50.0) +
+            ($counts[11] * 5.0) +
+            ($selectedHits * 150.0) +
+            ($rawHits * 50.0)
+            - $lossPenalty;
+    }
+
+    protected function rawBestDiagnostics(array $rawBest, array $scored, array $selected): array
+    {
+        $rawGame = $this->normalizeGame($rawBest['jogo'] ?? []);
+        $rawKey = implode('-', $rawGame);
+
+        $scoredSorted = $this->sortByScore($scored);
+
+        $rank = null;
+        $score = null;
+        $normalizedScore = null;
+
+        foreach ($scoredSorted as $index => $candidate) {
+            $candidateGame = $this->normalizeGame($candidate['dezenas'] ?? $candidate);
+
+            if (implode('-', $candidateGame) !== $rawKey) {
+                continue;
+            }
+
+            $rank = $index + 1;
+            $score = round((float) ($candidate['score'] ?? 0.0), 8);
+            $normalizedScore = isset($candidate['normalized_score'])
+                ? round((float) $candidate['normalized_score'], 8)
+                : null;
+
+            break;
+        }
+
+        $selectedContainsRaw = $this->selectedContainsGame($selected, $rawGame);
+
+        return [
+            'raw_rank' => $rank ?? '-',
+            'raw_score' => $score ?? '-',
+            'raw_normalized_score' => $normalizedScore ?? '-',
+            'selected_contains_raw' => $selectedContainsRaw,
+        ];
+    }
+
+    protected function scoreComparisonRow(
+        int $concurso,
+        string $tipo,
+        array $hitData,
+        array $scored,
+        array $selected,
+        array $resultadoReal
+    ): array {
+        $game = $this->normalizeGame($hitData['jogo'] ?? []);
+        $candidate = $this->findCandidateByGame($scored, $game);
+
+        if (empty($candidate)) {
+            $candidate = $this->findCandidateByGame($selected, $game);
+        }
+
+        if (empty($candidate)) {
+            return [];
+        }
+
+        $rank = $this->rankOfGame($game, $scored);
+        $hits = count(array_intersect($game, $resultadoReal));
+
+        return [
+            $concurso,
+            $tipo,
+            $hits,
+            $rank ?? '-',
+            $this->formatMetric($candidate['score'] ?? null),
+            $this->formatMetric($candidate['base_score'] ?? null),
+            $this->formatMetric($candidate['elite_bonus'] ?? null),
+            $this->formatMetric($candidate['aesthetic_penalty'] ?? null),
+            $this->formatMetric($candidate['frequency_quality'] ?? null),
+            $this->formatMetric($candidate['delay_quality'] ?? null),
+            $this->formatMetric($candidate['cycle_quality'] ?? null),
+            $this->formatMetric($candidate['correlation_quality'] ?? null),
+            $this->formatMetric($candidate['structure_quality'] ?? null),
+            $this->formatMetric($candidate['survival_quality'] ?? null),
+            $candidate['repetidas_ultimo_concurso'] ?? '-',
+            $candidate['cycle_hits'] ?? '-',
+            $candidate['soma'] ?? '-',
+            $candidate['impares'] ?? '-',
+            $candidate['sequencia_maxima'] ?? '-',
+            $candidate['moldura'] ?? '-',
+            $this->formatMetric($candidate['cluster_strength'] ?? null),
+            $this->selectedContainsGame($selected, $game) ? 'SIM' : 'NÃO',
+            implode(', ', $game),
+        ];
+    }
+
+    protected function findCandidateByGame(array $candidates, array $game): array
+    {
+        $key = implode('-', $this->normalizeGame($game));
+
+        foreach ($candidates as $candidate) {
+            $candidateGame = $this->normalizeGame($candidate['dezenas'] ?? $candidate);
+
+            if (implode('-', $candidateGame) === $key) {
+                return is_array($candidate) ? $candidate : [];
+            }
+        }
+
+        return [];
+    }
+
+    protected function rankOfGame(array $game, array $scored): ?int
+    {
+        $key = implode('-', $this->normalizeGame($game));
+        $scoredSorted = $this->sortByScore($scored);
+
+        foreach ($scoredSorted as $index => $candidate) {
+            $candidateGame = $this->normalizeGame($candidate['dezenas'] ?? $candidate);
+
+            if (implode('-', $candidateGame) === $key) {
+                return $index + 1;
+            }
+        }
+
+        return null;
+    }
+
+    protected function sortByScore(array $scored): array
+    {
+        $scoredSorted = array_values($scored);
+
+        usort($scoredSorted, function ($a, $b): int {
+            $scoreComparison = ((float) ($b['score'] ?? 0.0)) <=> ((float) ($a['score'] ?? 0.0));
+
+            if ($scoreComparison !== 0) {
+                return $scoreComparison;
+            }
+
+            return implode('-', $this->normalizeGame($a['dezenas'] ?? $a))
+                <=> implode('-', $this->normalizeGame($b['dezenas'] ?? $b));
+        });
+
+        return $scoredSorted;
+    }
+
+    protected function selectedContainsGame(array $selected, array $game): bool
+    {
+        $key = implode('-', $this->normalizeGame($game));
+
+        foreach ($selected as $candidate) {
+            $candidateGame = $this->normalizeGame($candidate['dezenas'] ?? $candidate);
+
+            if (implode('-', $candidateGame) === $key) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function formatMetric($value): string
+    {
+        if ($value === null || $value === '') {
+            return '-';
+        }
+
+        if (! is_numeric($value)) {
+            return (string) $value;
+        }
+
+        return (string) round((float) $value, 6);
     }
 
     protected function normalizeBases(array $bases, int $quantidadeDezenas): array
@@ -564,5 +843,13 @@ class LottusBacktestFechamentoCommand extends Command
         }
 
         return $best;
+    }
+
+    protected function normalizeGame(array $game): array
+    {
+        $game = array_values(array_unique(array_map('intval', $game)));
+        sort($game);
+
+        return $game;
     }
 }

@@ -20,5 +20,6 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->withCommands([
         \App\Console\Commands\LottusBacktestFechamentoCommand::class,
+        \App\Console\Commands\Lottus\AprenderFechamentoCommand::class,
     ])
     ->create();

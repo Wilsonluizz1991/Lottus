@@ -85,128 +85,95 @@ class FechamentoEngine
                 ? $baseCommercialSeed
                 : $this->nextCommercialSeed($baseCommercialSeed, $generationAttempt + 1000);
 
-            $dezenasBaseInicial = $this->candidateSelector->select(
-                $quantidadeDezenas,
-                $frequencyContext,
-                $delayContext,
-                $correlationContext,
-                $structureContext,
-                $cycleContext,
-                $concursoBase
-            );
-
-            if (count($dezenasBaseInicial) !== $quantidadeDezenas) {
-                throw new \Exception('Falha ao selecionar as dezenas base inicial do fechamento.');
-            }
-
-            $dezenasBase = $this->baseCompetitionService->selectWinningBase(
-                primaryBase: $dezenasBaseInicial,
+            $basesPrimarias = $this->candidateSelector->selectMany(
                 quantidadeDezenas: $quantidadeDezenas,
-                historico: $historico,
                 frequencyContext: $frequencyContext,
                 delayContext: $delayContext,
                 correlationContext: $correlationContext,
                 structureContext: $structureContext,
                 cycleContext: $cycleContext,
                 concursoBase: $concursoBase,
-                patternContext: $patternContext
+                limit: 12
             );
 
-            if (count($dezenasBase) !== $quantidadeDezenas) {
-                throw new \Exception('Falha ao selecionar a base vencedora do fechamento.');
+            if (empty($basesPrimarias)) {
+                throw new \Exception('Falha ao selecionar as bases primárias do fechamento.');
+            }
+
+            $basesCompetidoras = [];
+
+            foreach ($basesPrimarias as $basePrimaria) {
+                $basePrimaria = $this->normalizeGame($basePrimaria);
+
+                if (count($basePrimaria) !== $quantidadeDezenas) {
+                    continue;
+                }
+
+                $basesSelecionadas = $this->baseCompetitionService->selectTopBases(
+                    primaryBase: $basePrimaria,
+                    quantidadeDezenas: $quantidadeDezenas,
+                    historico: $historico,
+                    frequencyContext: $frequencyContext,
+                    delayContext: $delayContext,
+                    correlationContext: $correlationContext,
+                    structureContext: $structureContext,
+                    cycleContext: $cycleContext,
+                    concursoBase: $concursoBase,
+                    patternContext: $patternContext,
+                    limit: 3
+                );
+
+                foreach ($basesSelecionadas as $baseSelecionada) {
+                    $baseSelecionada = $this->normalizeGame($baseSelecionada);
+
+                    if (count($baseSelecionada) === $quantidadeDezenas) {
+                        $basesCompetidoras[] = $baseSelecionada;
+                    }
+                }
+            }
+
+            $basesCompetidoras = $this->uniqueBaseList($basesCompetidoras);
+            $basesCompetidoras = array_slice($basesCompetidoras, 0, 12);
+
+            if (empty($basesCompetidoras)) {
+                throw new \Exception('Falha ao selecionar bases competidoras do fechamento.');
             }
 
             if ($generationAttempt > 0) {
-                $dezenasBase = $this->resolveRegeneratedCommercialBase(
-                    dezenasBase: $dezenasBase,
-                    quantidadeDezenas: $quantidadeDezenas,
-                    generationAttempt: $generationAttempt,
-                    frequencyContext: $frequencyContext
-                );
-            }
-
-            $bases = [$dezenasBase];
-
-            if ((bool) config('lottus_fechamento.base_variations.enabled', false)) {
-                $numberScores = $this->baseCompetitionService->getLastNumberScores();
-
-                if (empty($numberScores)) {
-                    $numberScores = $frequencyContext['scores'] ?? [];
-                }
-
-                $bases = $this->baseVariationService->generate(
-                    base: $dezenasBase,
-                    numberScores: $numberScores,
-                    quantidadeDezenas: $quantidadeDezenas,
-                    maxVariations: match ($quantidadeDezenas) {
-                        16 => $generationAttempt > 0 ? 3 : 1,
-                        17 => $generationAttempt > 0 ? 4 : 2,
-                        18 => $generationAttempt > 0 ? 5 : 3,
-                        19 => $generationAttempt > 0 ? 6 : 4,
-                        20 => $generationAttempt > 0 ? 7 : 5,
-                        default => $generationAttempt > 0 ? 5 : 3,
-                    }
-                );
-            }
-
-            $combinations = [];
-
-            foreach ($bases as $baseVariation) {
-                $generated = $this->combinationGenerator->generate(
-                    $baseVariation,
-                    $quantidadeDezenas
+                $basesCompetidoras = array_map(
+                    fn (array $base): array => $this->resolveRegeneratedCommercialBase(
+                        dezenasBase: $base,
+                        quantidadeDezenas: $quantidadeDezenas,
+                        generationAttempt: $generationAttempt,
+                        frequencyContext: $frequencyContext
+                    ),
+                    $basesCompetidoras
                 );
 
-                if (! empty($generated)) {
-                    $combinations = array_merge($combinations, $generated);
-                }
+                $basesCompetidoras = $this->uniqueBaseList($basesCompetidoras);
             }
 
-            $combinations = array_values(array_unique(
-                array_map(
-                    fn ($game) => implode('-', array_map('intval', $game)),
-                    $combinations
-                )
-            ));
-
-            $combinations = array_map(
-                fn ($key) => array_map('intval', explode('-', $key)),
-                $combinations
+            $portfolio = $this->selectBestCommercialPortfolio(
+                basesCompetidoras: $basesCompetidoras,
+                quantidadeDezenas: $quantidadeDezenas,
+                quantidadeJogos: $quantidadeJogos,
+                frequencyContext: $frequencyContext,
+                delayContext: $delayContext,
+                correlationContext: $correlationContext,
+                structureContext: $structureContext,
+                cycleContext: $cycleContext,
+                concursoBase: $concursoBase,
+                commercialSeed: $commercialSeed,
+                generationAttempt: $generationAttempt
             );
 
-            if (empty($combinations)) {
+            if (empty($portfolio['selectedGames']) || empty($portfolio['scoredCombinations']) || empty($portfolio['dezenasBase'])) {
                 continue;
             }
 
-            $scoredCombinations = $this->scoreService->score(
-                $combinations,
-                $frequencyContext,
-                $delayContext,
-                $correlationContext,
-                $structureContext,
-                $cycleContext,
-                $concursoBase
-            );
-
-            $scoredCombinations = $this->prepareCommercialCandidatePool(
-                scoredCombinations: $scoredCombinations,
-                commercialSeed: $commercialSeed
-            );
-
-            $selectedGames = $this->coverageOptimizerService->optimize(
-                $scoredCombinations,
-                $quantidadeJogos,
-                $dezenasBase,
-                $this->baseCompetitionService->getLastNumberScores() ?: ($frequencyContext['scores'] ?? [])
-            );
-
-            if (count($selectedGames) < $quantidadeJogos) {
-                $selectedGames = $this->reducer->reduce(
-                    $scoredCombinations,
-                    $quantidadeJogos,
-                    $dezenasBase
-                );
-            }
+            $selectedGames = $portfolio['selectedGames'];
+            $scoredCombinations = $portfolio['scoredCombinations'];
+            $dezenasBase = $portfolio['dezenasBase'];
 
             if (count($selectedGames) < $quantidadeJogos) {
                 continue;
@@ -243,6 +210,179 @@ class FechamentoEngine
         throw new \Exception('O fechamento não conseguiu selecionar a quantidade final de jogos.');
     }
 
+    protected function selectBestCommercialPortfolio(
+        array $basesCompetidoras,
+        int $quantidadeDezenas,
+        int $quantidadeJogos,
+        array $frequencyContext,
+        array $delayContext,
+        array $correlationContext,
+        array $structureContext,
+        array $cycleContext,
+        LotofacilConcurso $concursoBase,
+        string $commercialSeed,
+        int $generationAttempt
+    ): array {
+        $bestPortfolio = [
+            'dezenasBase' => [],
+            'selectedGames' => [],
+            'scoredCombinations' => [],
+            'portfolioScore' => -INF,
+        ];
+
+        foreach ($basesCompetidoras as $dezenasBase) {
+            $dezenasBase = $this->normalizeGame($dezenasBase);
+
+            if (count($dezenasBase) !== $quantidadeDezenas) {
+                continue;
+            }
+
+            $bases = [$dezenasBase];
+
+            if ((bool) config('lottus_fechamento.base_variations.enabled', false)) {
+                $numberScores = $this->baseCompetitionService->getLastNumberScores();
+
+                if (empty($numberScores)) {
+                    $numberScores = $frequencyContext['scores'] ?? [];
+                }
+
+                $bases = $this->baseVariationService->generate(
+                    base: $dezenasBase,
+                    numberScores: $numberScores,
+                    quantidadeDezenas: $quantidadeDezenas,
+                    maxVariations: match ($quantidadeDezenas) {
+                        16 => $generationAttempt > 0 ? 3 : 1,
+                        17 => $generationAttempt > 0 ? 4 : 2,
+                        18 => $generationAttempt > 0 ? 5 : 3,
+                        19 => $generationAttempt > 0 ? 6 : 4,
+                        20 => $generationAttempt > 0 ? 7 : 5,
+                        default => $generationAttempt > 0 ? 5 : 3,
+                    }
+                );
+            }
+
+            $combinations = [];
+
+            foreach ($bases as $baseVariation) {
+                $baseVariation = $this->normalizeGame($baseVariation);
+
+                if (count($baseVariation) !== $quantidadeDezenas) {
+                    continue;
+                }
+
+                $generated = $this->combinationGenerator->generate(
+                    $baseVariation,
+                    $quantidadeDezenas
+                );
+
+                if (! empty($generated)) {
+                    $combinations = array_merge($combinations, $generated);
+                }
+            }
+
+            $combinations = array_values(array_unique(
+                array_map(
+                    fn ($game) => implode('-', array_map('intval', $game)),
+                    $combinations
+                )
+            ));
+
+            $combinations = array_map(
+                fn ($key) => array_map('intval', explode('-', $key)),
+                $combinations
+            );
+
+            if (empty($combinations)) {
+                continue;
+            }
+
+            $scoredCombinations = $this->scoreService->score(
+                $combinations,
+                $frequencyContext,
+                $delayContext,
+                $correlationContext,
+                $structureContext,
+                $cycleContext,
+                $concursoBase
+            );
+
+            if (empty($scoredCombinations)) {
+                continue;
+            }
+
+            $scoredCombinations = $this->prepareCommercialCandidatePool(
+                scoredCombinations: $scoredCombinations,
+                commercialSeed: $commercialSeed
+            );
+
+            $selectedGames = $this->coverageOptimizerService->optimize(
+                $scoredCombinations,
+                $quantidadeJogos,
+                $dezenasBase,
+                $this->baseCompetitionService->getLastNumberScores() ?: ($frequencyContext['scores'] ?? [])
+            );
+
+            if (count($selectedGames) < $quantidadeJogos) {
+                $selectedGames = $this->reducer->reduce(
+                    $scoredCombinations,
+                    $quantidadeJogos,
+                    $dezenasBase
+                );
+            }
+
+            if (count($selectedGames) < $quantidadeJogos) {
+                continue;
+            }
+
+            $portfolioScore = $this->commercialPortfolioScore(
+                selectedGames: $selectedGames,
+                scoredCombinations: $scoredCombinations
+            );
+
+            if ($portfolioScore > $bestPortfolio['portfolioScore']) {
+                $bestPortfolio = [
+                    'dezenasBase' => $dezenasBase,
+                    'selectedGames' => $selectedGames,
+                    'scoredCombinations' => $scoredCombinations,
+                    'portfolioScore' => $portfolioScore,
+                ];
+            }
+        }
+
+        return $bestPortfolio;
+    }
+
+    protected function commercialPortfolioScore(
+        array $selectedGames,
+        array $scoredCombinations
+    ): float {
+        $selectedScore = 0.0;
+        $rawScore = 0.0;
+        $diversityScore = 0.0;
+        $selectedNormalized = [];
+
+        foreach ($selectedGames as $gameData) {
+            $selectedScore += (float) ($gameData['original_score'] ?? $gameData['score'] ?? 0.0);
+            $selectedNormalized[] = $this->normalizeGame($gameData['dezenas'] ?? $gameData);
+        }
+
+        foreach (array_slice($scoredCombinations, 0, min(60, count($scoredCombinations))) as $gameData) {
+            $rawScore += (float) ($gameData['original_score'] ?? $gameData['score'] ?? 0.0);
+        }
+
+        for ($i = 0; $i < count($selectedNormalized); $i++) {
+            for ($j = $i + 1; $j < count($selectedNormalized); $j++) {
+                $intersection = count(array_intersect($selectedNormalized[$i], $selectedNormalized[$j]));
+                $diversityScore += max(0, 15 - $intersection);
+            }
+        }
+
+        return
+            ($selectedScore * 1.0) +
+            ($rawScore * 0.08) +
+            ($diversityScore * 2.5);
+    }
+
     protected function validatePayload(
         string $email,
         int $quantidadeDezenas,
@@ -262,198 +402,6 @@ class FechamentoEngine
         if (! $concursoBase) {
             throw new \InvalidArgumentException('Concurso base não informado para o fechamento.');
         }
-    }
-
-    protected function commercialRegenerationAttempts(int $quantidadeDezenas): int
-    {
-        $configuredAttempts = (int) config('lottus_fechamento.commercial_regeneration_attempts', 0);
-
-        if ($configuredAttempts > 0) {
-            return $configuredAttempts;
-        }
-
-        return match ($quantidadeDezenas) {
-            16 => 40,
-            17 => 30,
-            18 => 24,
-            19 => 20,
-            20 => 18,
-            default => 24,
-        };
-    }
-
-    protected function resolveRegeneratedCommercialBase(
-        array $dezenasBase,
-        int $quantidadeDezenas,
-        int $generationAttempt,
-        array $frequencyContext
-    ): array {
-        $numberScores = $this->baseCompetitionService->getLastNumberScores();
-
-        if (empty($numberScores)) {
-            $numberScores = $frequencyContext['scores'] ?? [];
-        }
-
-        $scoreMap = $this->normalizeNumberScores($numberScores);
-
-        if (empty($scoreMap)) {
-            return $this->normalizeGame($dezenasBase);
-        }
-
-        $variations = $this->baseVariationService->generate(
-            base: $dezenasBase,
-            numberScores: $scoreMap,
-            quantidadeDezenas: $quantidadeDezenas,
-            maxVariations: match ($quantidadeDezenas) {
-                16 => 10,
-                17 => 9,
-                18 => 8,
-                19 => 7,
-                20 => 7,
-                default => 8,
-            }
-        );
-
-        $validVariations = array_values(array_filter(
-            $variations,
-            fn ($variation) => is_array($variation) && count($variation) === $quantidadeDezenas
-        ));
-
-        $statisticalMutations = $this->generateStatisticalBaseMutations(
-            dezenasBase: $dezenasBase,
-            quantidadeDezenas: $quantidadeDezenas,
-            scoreMap: $scoreMap
-        );
-
-        $validVariations = array_values(array_unique(
-            array_map(
-                fn ($variation) => implode('-', $this->normalizeGame($variation)),
-                array_merge($validVariations, $statisticalMutations)
-            )
-        ));
-
-        if (empty($validVariations)) {
-            return $this->normalizeGame($dezenasBase);
-        }
-
-        $index = ($generationAttempt - 1) % count($validVariations);
-
-        return array_map('intval', explode('-', $validVariations[$index]));
-    }
-
-    protected function normalizeNumberScores(array $numberScores): array
-    {
-        $scoreMap = [];
-
-        foreach ($numberScores as $key => $value) {
-            if (is_array($value)) {
-                $number = (int) ($value['dezena'] ?? $value['number'] ?? $value['numero'] ?? $key);
-                $score = (float) ($value['score'] ?? $value['value'] ?? $value['peso'] ?? 0.0);
-            } else {
-                $number = (int) $key;
-                $score = (float) $value;
-            }
-
-            if ($number >= 1 && $number <= 25) {
-                $scoreMap[$number] = $score;
-            }
-        }
-
-        if (count($scoreMap) < 25) {
-            for ($number = 1; $number <= 25; $number++) {
-                $scoreMap[$number] = $scoreMap[$number] ?? 0.0;
-            }
-        }
-
-        arsort($scoreMap);
-
-        return $scoreMap;
-    }
-
-    protected function generateStatisticalBaseMutations(
-        array $dezenasBase,
-        int $quantidadeDezenas,
-        array $scoreMap
-    ): array {
-        $base = $this->normalizeGame($dezenasBase);
-        $baseLookup = array_fill_keys($base, true);
-
-        $baseByWeakness = $base;
-        usort($baseByWeakness, function (int $a, int $b) use ($scoreMap): int {
-            $scoreComparison = ($scoreMap[$a] ?? 0.0) <=> ($scoreMap[$b] ?? 0.0);
-
-            if ($scoreComparison !== 0) {
-                return $scoreComparison;
-            }
-
-            return $a <=> $b;
-        });
-
-        $outsideByStrength = array_values(array_filter(
-            array_keys($scoreMap),
-            fn ($number) => ! isset($baseLookup[(int) $number])
-        ));
-
-        usort($outsideByStrength, function (int $a, int $b) use ($scoreMap): int {
-            $scoreComparison = ($scoreMap[$b] ?? 0.0) <=> ($scoreMap[$a] ?? 0.0);
-
-            if ($scoreComparison !== 0) {
-                return $scoreComparison;
-            }
-
-            return $a <=> $b;
-        });
-
-        if (empty($baseByWeakness) || empty($outsideByStrength)) {
-            return [];
-        }
-
-        $mutations = [];
-        $maxSingleSwaps = min(count($baseByWeakness), count($outsideByStrength), match ($quantidadeDezenas) {
-            16 => 9,
-            17 => 8,
-            18 => 7,
-            19 => 6,
-            20 => 5,
-            default => 7,
-        });
-
-        for ($i = 0; $i < $maxSingleSwaps; $i++) {
-            $mutation = array_values(array_diff($base, [$baseByWeakness[$i]]));
-            $mutation[] = (int) $outsideByStrength[$i];
-            $mutation = $this->normalizeGame($mutation);
-
-            if (count($mutation) === $quantidadeDezenas) {
-                $mutations[] = $mutation;
-            }
-        }
-
-        $maxDoubleSwaps = min(
-            max(0, count($baseByWeakness) - 1),
-            max(0, count($outsideByStrength) - 1),
-            match ($quantidadeDezenas) {
-                16 => 6,
-                17 => 5,
-                18 => 4,
-                19 => 3,
-                20 => 2,
-                default => 4,
-            }
-        );
-
-        for ($i = 0; $i < $maxDoubleSwaps; $i++) {
-            $remove = [$baseByWeakness[$i], $baseByWeakness[$i + 1]];
-            $add = [(int) $outsideByStrength[$i], (int) $outsideByStrength[$i + 1]];
-            $mutation = array_values(array_diff($base, $remove));
-            $mutation = array_merge($mutation, $add);
-            $mutation = $this->normalizeGame($mutation);
-
-            if (count($mutation) === $quantidadeDezenas) {
-                $mutations[] = $mutation;
-            }
-        }
-
-        return $mutations;
     }
 
     protected function resolveCommercialSeed(
@@ -477,6 +425,81 @@ class FechamentoEngine
             random_int(1, PHP_INT_MAX),
             bin2hex(random_bytes(16)),
         ]));
+    }
+
+    protected function commercialRegenerationAttempts(int $quantidadeDezenas): int
+    {
+        return match ($quantidadeDezenas) {
+            16 => max(40, (int) config('lottus_fechamento.commercial_regeneration_attempts.16', 40)),
+            17 => max(32, (int) config('lottus_fechamento.commercial_regeneration_attempts.17', 32)),
+            18 => max(28, (int) config('lottus_fechamento.commercial_regeneration_attempts.18', 28)),
+            19 => max(24, (int) config('lottus_fechamento.commercial_regeneration_attempts.19', 24)),
+            20 => max(20, (int) config('lottus_fechamento.commercial_regeneration_attempts.20', 20)),
+            default => max(24, (int) config('lottus_fechamento.commercial_regeneration_attempts.default', 24)),
+        };
+    }
+
+    protected function resolveRegeneratedCommercialBase(
+        array $dezenasBase,
+        int $quantidadeDezenas,
+        int $generationAttempt,
+        array $frequencyContext
+    ): array {
+        $dezenasBase = $this->normalizeGame($dezenasBase);
+        $scores = $frequencyContext['scores'] ?? [];
+
+        if (count($dezenasBase) !== $quantidadeDezenas || empty($scores)) {
+            return $dezenasBase;
+        }
+
+        $inside = $dezenasBase;
+        $outside = array_values(array_diff(range(1, 25), $dezenasBase));
+
+        usort($inside, function (int $a, int $b) use ($scores): int {
+            return ((float) ($scores[$a] ?? 0.0)) <=> ((float) ($scores[$b] ?? 0.0));
+        });
+
+        usort($outside, function (int $a, int $b) use ($scores): int {
+            return ((float) ($scores[$b] ?? 0.0)) <=> ((float) ($scores[$a] ?? 0.0));
+        });
+
+        $replacementCount = match ($quantidadeDezenas) {
+            16 => min(3, 1 + (int) floor($generationAttempt / 8)),
+            17 => min(4, 1 + (int) floor($generationAttempt / 7)),
+            18 => min(5, 1 + (int) floor($generationAttempt / 6)),
+            19 => min(5, 1 + (int) floor($generationAttempt / 6)),
+            20 => min(6, 1 + (int) floor($generationAttempt / 5)),
+            default => min(5, 1 + (int) floor($generationAttempt / 6)),
+        };
+
+        $rotation = $generationAttempt % max(1, count($outside));
+        $outside = array_values(array_merge(
+            array_slice($outside, $rotation),
+            array_slice($outside, 0, $rotation)
+        ));
+
+        $base = $dezenasBase;
+
+        for ($i = 0; $i < $replacementCount; $i++) {
+            $remove = $inside[$i] ?? null;
+            $add = $outside[$i] ?? null;
+
+            if (! $remove || ! $add) {
+                continue;
+            }
+
+            $candidate = array_values(array_diff($base, [$remove]));
+            $candidate[] = $add;
+            $candidate = $this->normalizeGame($candidate);
+
+            if (count($candidate) === $quantidadeDezenas) {
+                $base = $candidate;
+            }
+        }
+
+        sort($base);
+
+        return $base;
     }
 
     protected function prepareCommercialCandidatePool(
@@ -508,7 +531,6 @@ class FechamentoEngine
         return $scoredCombinations;
     }
 
-
     protected function resolveUniqueCommercialPortfolio(
         array $selectedGames,
         array $candidatePool,
@@ -519,7 +541,6 @@ class FechamentoEngine
     ): ?array {
         $maxAttempts = max(1, (int) config('lottus_fechamento.commercial_uniqueness_attempts', 8));
         $lastPortfolio = [];
-        $lastCommercialSeed = $commercialSeed;
 
         for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
             $attemptSeed = $attempt === 0
@@ -539,7 +560,6 @@ class FechamentoEngine
             );
 
             $lastPortfolio = $attemptPortfolio;
-            $lastCommercialSeed = $attemptSeed;
 
             if (count($attemptPortfolio) < $quantidadeJogos) {
                 continue;
@@ -831,6 +851,27 @@ class FechamentoEngine
         $seen[$key] = true;
 
         return true;
+    }
+
+    protected function uniqueBaseList(array $bases): array
+    {
+        $unique = [];
+
+        foreach ($bases as $base) {
+            $base = $this->normalizeGame($base);
+
+            if (empty($base)) {
+                continue;
+            }
+
+            $key = implode('-', $base);
+
+            if (! isset($unique[$key])) {
+                $unique[$key] = $base;
+            }
+        }
+
+        return array_values($unique);
     }
 
     protected function stableFloat(string $value): float
