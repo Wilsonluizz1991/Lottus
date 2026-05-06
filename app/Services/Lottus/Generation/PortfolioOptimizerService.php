@@ -39,9 +39,14 @@ class PortfolioOptimizerService
     | Isso impede que o portfolio destrua elite.
     */
 
+    $smallQuantityMax = (int) $this->tuningValue('score_rank_guard.small_quantity_max', 15);
+    $hardRawLockLimit = $quantidade <= $smallQuantityMax
+        ? (int) $this->tuningValue('elite_lock.small_quantity_absolute_locked_limit', 2)
+        : (int) $this->tuningValue('elite_lock.absolute_locked_limit', 4);
+
     $hardRawLockCount = min(
         $quantidade,
-        (int) $this->tuningValue('elite_lock.absolute_locked_limit', 4)
+        max(0, $hardRawLockLimit)
     );
 
     $topRawCandidates = array_slice($pool, 0, $hardRawLockCount);
@@ -49,6 +54,12 @@ class PortfolioOptimizerService
     foreach ($topRawCandidates as $candidate) {
         if (! $this->alreadySelected($candidate, $selected)) {
             $selected[] = $candidate;
+        }
+    }
+
+    foreach ($this->extractScoreRankGuardCandidates($originalPool, $selected, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'score_rank_guard')) {
+            continue;
         }
     }
 
@@ -66,6 +77,12 @@ class PortfolioOptimizerService
 
     foreach (app(ClusterEliteLockService::class)->extract($originalPool, $selected, $this->tuning, $quantidade) as $candidate) {
         if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'cluster_elite_lock')) {
+            continue;
+        }
+    }
+
+    foreach ($this->extractRankBandExplorationCandidates($originalPool, $selected, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'rank_band_exploration')) {
             continue;
         }
     }
@@ -106,29 +123,7 @@ class PortfolioOptimizerService
         }
     }
 
-    while (count($selected) < $quantidade) {
-        $bestCandidate = null;
-        $bestValue = null;
-
-        foreach ($pool as $candidate) {
-            if ($this->alreadySelected($candidate, $selected)) {
-                continue;
-            }
-
-            $value = $this->lateElitePreservationValue($candidate, $selected);
-
-            if ($bestCandidate === null || $value > $bestValue) {
-                $bestCandidate = $candidate;
-                $bestValue = $value;
-            }
-        }
-
-        if ($bestCandidate === null) {
-            break;
-        }
-
-        $selected[] = $bestCandidate;
-    }
+    $this->fillRemainingCandidates($selected, $pool, $quantidade);
 
     $selected = array_slice($selected, 0, $quantidade);
 
@@ -161,6 +156,46 @@ class PortfolioOptimizerService
         return true;
     }
 
+    protected function fillRemainingCandidates(array &$selected, array $pool, int $quantidade): void
+    {
+        if (count($selected) >= $quantidade) {
+            return;
+        }
+
+        $fallbackCandidates = [];
+
+        foreach ($pool as $candidate) {
+            if ($this->alreadySelected($candidate, $selected)) {
+                continue;
+            }
+
+            $candidate['fallback_rank_value'] = $this->lateElitePreservationValue($candidate, $selected);
+            $fallbackCandidates[] = $candidate;
+        }
+
+        usort($fallbackCandidates, function (array $a, array $b): int {
+            return ($b['fallback_rank_value'] ?? 0.0) <=> ($a['fallback_rank_value'] ?? 0.0);
+        });
+
+        foreach ($fallbackCandidates as $candidate) {
+            if (count($selected) >= $quantidade) {
+                return;
+            }
+
+            $this->tryAddCandidate($selected, $candidate, $quantidade, 'ranked_fallback');
+        }
+
+        foreach ($fallbackCandidates as $candidate) {
+            if (count($selected) >= $quantidade) {
+                return;
+            }
+
+            if (! $this->alreadySelected($candidate, $selected)) {
+                $selected[] = $candidate;
+            }
+        }
+    }
+
     protected function passesControlledDiversityGate(array $candidate, array $selected, string $phase): bool
     {
         if (empty($selected)) {
@@ -177,6 +212,10 @@ class PortfolioOptimizerService
 
         if ($maxOverlap === 15) {
             return false;
+        }
+
+        if ($phase === 'score_rank_guard') {
+            return true;
         }
 
         $clone14Limit = (int) $this->tuningValue('controlled_diversity.max_overlap_14_count', 1);
@@ -250,6 +289,234 @@ class PortfolioOptimizerService
         );
 
         return array_slice($originalPool, 0, $limit);
+    }
+
+    protected function extractRankBandExplorationCandidates(array $originalPool, array $selected, int $quantidade): array
+    {
+        if (
+            empty($originalPool)
+            || ! (bool) $this->tuningValue('rank_band_exploration.enabled', true)
+            || $quantidade < (int) $this->tuningValue('rank_band_exploration.min_quantity', 20)
+        ) {
+            return [];
+        }
+
+        $slots = min(
+            max(1, (int) floor($quantidade * (float) $this->tuningValue('rank_band_exploration.slot_ratio', 0.18))),
+            (int) $this->tuningValue('rank_band_exploration.max_slots', 18)
+        );
+
+        $bands = $this->tuningValue('rank_band_exploration.bands', [
+            0.08,
+            0.14,
+            0.20,
+            0.28,
+            0.36,
+            0.46,
+            0.58,
+            0.72,
+        ]);
+
+        if (! is_array($bands)) {
+            return [];
+        }
+
+        $window = max(1, (int) $this->tuningValue('rank_band_exploration.window', 8));
+        $poolCount = count($originalPool);
+        $candidates = [];
+        $seen = [];
+
+        foreach ($bands as $band) {
+            if (count($candidates) >= $slots) {
+                break;
+            }
+
+            $center = (int) floor(($poolCount - 1) * max(0.0, min(1.0, (float) $band)));
+            $start = max(0, $center - $window);
+            $slice = array_slice($originalPool, $start, ($window * 2) + 1);
+
+            usort($slice, function (array $a, array $b) use ($selected): int {
+                return $this->portfolioExpansionValue($b, $selected)
+                    <=>
+                    $this->portfolioExpansionValue($a, $selected);
+            });
+
+            foreach ($slice as $candidate) {
+                $key = $this->candidateKey($candidate);
+
+                if (isset($seen[$key]) || $this->alreadySelected($candidate, $selected)) {
+                    continue;
+                }
+
+                $candidate['rank_band_exploration'] = true;
+                $candidate['rank_band_value'] = $this->portfolioExpansionValue($candidate, $selected);
+
+                $candidates[] = $candidate;
+                $seen[$key] = true;
+
+                break;
+            }
+        }
+
+        usort($candidates, function (array $a, array $b): int {
+            return ($b['rank_band_value'] ?? 0.0) <=> ($a['rank_band_value'] ?? 0.0);
+        });
+
+        return array_slice($candidates, 0, $slots);
+    }
+
+    protected function extractScoreRankGuardCandidates(array $originalPool, array $selected, int $quantidade): array
+    {
+        if (
+            empty($originalPool)
+            || ! (bool) $this->tuningValue('score_rank_guard.enabled', true)
+            || $quantidade < (int) $this->tuningValue('score_rank_guard.min_quantity', 1)
+        ) {
+            return [];
+        }
+
+        $smallQuantityMax = (int) $this->tuningValue('score_rank_guard.small_quantity_max', 15);
+        $minimumSlots = $quantidade <= $smallQuantityMax
+            ? (int) $this->tuningValue('score_rank_guard.small_quantity_min_slots', 6)
+            : 1;
+
+        $slots = min(
+            $quantidade,
+            max($minimumSlots, (int) floor($quantidade * (float) $this->tuningValue('score_rank_guard.slot_ratio', 0.28))),
+            (int) $this->tuningValue('score_rank_guard.max_slots', 16)
+        );
+
+        $defaultBands = [
+            0.035,
+            0.070,
+            0.110,
+            0.150,
+            0.190,
+            0.230,
+            0.270,
+            0.319,
+            0.390,
+            0.500,
+            0.615,
+            0.702,
+        ];
+
+        $smallQuantityBands = [
+            0.035,
+            0.319,
+            0.615,
+            0.702,
+            0.110,
+            0.230,
+            0.500,
+            0.850,
+        ];
+
+        $bands = $quantidade <= $smallQuantityMax
+            ? $this->tuningValue('score_rank_guard.small_quantity_bands', $smallQuantityBands)
+            : $this->tuningValue('score_rank_guard.bands', $defaultBands);
+
+        if (! is_array($bands)) {
+            return [];
+        }
+
+        $poolCount = count($originalPool);
+        $window = max(0, (int) $this->tuningValue('score_rank_guard.window', 2));
+        $perBandLimit = max(1, (int) $this->tuningValue('score_rank_guard.per_band_limit', 1));
+        $latePerBandLimit = max($perBandLimit, (int) $this->tuningValue('score_rank_guard.late_per_band_limit', 2));
+        $lateBandThreshold = (float) $this->tuningValue('score_rank_guard.late_band_threshold', 0.50);
+        $candidates = [];
+        $seen = [];
+
+        $anchorRanks = $quantidade <= $smallQuantityMax
+            ? $this->tuningValue('score_rank_guard.small_quantity_anchor_ranks', [])
+            : $this->tuningValue(
+                'score_rank_guard.anchor_ranks',
+                $this->tuningValue('score_rank_guard.small_quantity_anchor_ranks', [])
+            );
+
+        if (is_array($anchorRanks)) {
+            foreach ($anchorRanks as $rank) {
+                if (count($candidates) >= $slots) {
+                    break;
+                }
+
+                $index = max(0, min($poolCount - 1, ((int) $rank) - 1));
+                $candidate = $originalPool[$index] ?? null;
+
+                if (! is_array($candidate)) {
+                    continue;
+                }
+
+                $key = $this->candidateKey($candidate);
+
+                if (isset($seen[$key]) || $this->alreadySelected($candidate, $selected)) {
+                    continue;
+                }
+
+                $candidate['score_rank_guard'] = true;
+                $candidate['score_rank_guard_anchor_rank'] = (int) $rank;
+                $candidate['score_rank_guard_rank'] = $index + 1;
+
+                $candidates[] = $candidate;
+                $seen[$key] = true;
+            }
+        }
+
+        foreach ($bands as $band) {
+            if (count($candidates) >= $slots) {
+                break;
+            }
+
+            $center = (int) round(($poolCount - 1) * max(0.0, min(1.0, (float) $band)));
+            $bandLimit = ((float) $band >= $lateBandThreshold) ? $latePerBandLimit : $perBandLimit;
+            $addedForBand = 0;
+
+            foreach ($this->nearbyRankIndexes($center, $poolCount, $window) as $index) {
+                if (count($candidates) >= $slots || $addedForBand >= $bandLimit) {
+                    break;
+                }
+
+                $candidate = $originalPool[$index] ?? null;
+
+                if (! is_array($candidate)) {
+                    continue;
+                }
+
+                $key = $this->candidateKey($candidate);
+
+                if (isset($seen[$key]) || $this->alreadySelected($candidate, $selected)) {
+                    continue;
+                }
+
+                $candidate['score_rank_guard'] = true;
+                $candidate['score_rank_guard_band'] = (float) $band;
+                $candidate['score_rank_guard_rank'] = $index + 1;
+
+                $candidates[] = $candidate;
+                $seen[$key] = true;
+                $addedForBand++;
+            }
+        }
+
+        return $candidates;
+    }
+
+    protected function nearbyRankIndexes(int $center, int $poolCount, int $window): array
+    {
+        $indexes = [];
+
+        for ($offset = 0; $offset <= $window; $offset++) {
+            foreach ([$center - $offset, $center + $offset] as $index) {
+                if ($index < 0 || $index >= $poolCount || isset($indexes[$index])) {
+                    continue;
+                }
+
+                $indexes[$index] = $index;
+            }
+        }
+
+        return array_values($indexes);
     }
 
     protected function extractAbsoluteLockedCandidates(array $pool, int $quantidade): array

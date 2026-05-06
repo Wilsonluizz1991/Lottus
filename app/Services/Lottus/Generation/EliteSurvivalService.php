@@ -13,17 +13,28 @@ class EliteSurvivalService
             return [];
         }
 
+        $survivalTuning = $tuning['elite_survival'] ?? [];
+        $selectionLimit = min(
+            $quantidade,
+            max(0, (int) ($survivalTuning['limit'] ?? 3))
+        );
+
+        if ($selectionLimit === 0) {
+            return [];
+        }
+
         $pool = array_values($rankedGames);
 
-        $limit = min(
-            max($quantidade * 8, 30),
+        $scanLimit = min(
+            max($quantidade * 8, (int) ($survivalTuning['minimum_candidates'] ?? 30)),
             count($pool)
         );
 
-        $pool = array_slice($pool, 0, $limit);
+        $pool = array_slice($pool, 0, $scanLimit);
 
         $selected = [];
         $seen = [];
+        $minEliteScore = (float) ($survivalTuning['min_score'] ?? 1.0);
 
         foreach ($pool as $candidate) {
             $key = $this->candidateKey($candidate);
@@ -34,7 +45,7 @@ class EliteSurvivalService
 
             $eliteValue = $this->eliteValue($candidate);
 
-            if ($eliteValue < 1) {
+            if ($eliteValue < $minEliteScore) {
                 continue;
             }
 
@@ -55,7 +66,7 @@ class EliteSurvivalService
             return $valueB <=> $valueA;
         });
 
-        return $selected;
+        return array_slice($selected, 0, $selectionLimit);
     }
 
     protected function eliteValue(array $candidate): float

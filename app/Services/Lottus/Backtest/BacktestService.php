@@ -13,6 +13,7 @@ use App\Services\Lottus\Generation\CandidateGeneratorService;
 use App\Services\Lottus\Generation\GameScoringService;
 use App\Services\Lottus\Generation\PortfolioOptimizerService;
 use App\Services\Lottus\Generation\CoreClusterPreservationService;
+use App\Services\Lottus\Generation\HighCeilingCandidateGeneratorService;
 
 class BacktestService
 {
@@ -24,13 +25,20 @@ class BacktestService
         protected StructureAnalysisService $structureAnalysisService,
         protected CycleAnalysisService $cycleAnalysisService,
         protected CandidateGeneratorService $candidateGeneratorService,
+        protected HighCeilingCandidateGeneratorService $highCeilingCandidateGeneratorService,
         protected GameScoringService $gameScoringService,
         protected PortfolioOptimizerService $portfolioOptimizerService,
         protected CoreClusterPreservationService $coreClusterPreservationService,
     ) {
     }
 
-    public function run(int $inicioConcurso, int $fimConcurso, int $quantidadeJogos = 1, ?array $portfolioTuning = null): array
+    public function run(
+        int $inicioConcurso,
+        int $fimConcurso,
+        int $quantidadeJogos = 1,
+        ?array $portfolioTuning = null,
+        ?int $seed = null
+    ): array
     {
         if ($inicioConcurso >= $fimConcurso) {
             throw new \InvalidArgumentException('O concurso inicial deve ser menor que o concurso final.');
@@ -57,7 +65,10 @@ class BacktestService
             'inicio_concurso' => $inicioConcurso,
             'fim_concurso' => $fimConcurso,
             'quantidade_jogos_por_concurso' => $quantidadeJogos,
-            'quantidade_candidatos_por_concurso' => (int) config('lottus.generator.target_candidates', 200),
+            'quantidade_candidatos_por_concurso' => (int) config('lottus.generator.target_candidates', 200)
+                + ((bool) config('lottus.generator.elite.enabled', true)
+                    ? (int) config('lottus.generator.elite.target_candidates', 0)
+                    : 0),
             'concursos_testados' => 0,
             'jogos_gerados' => 0,
             'faixas' => [
@@ -67,6 +78,19 @@ class BacktestService
                 14 => 0,
                 15 => 0,
             ],
+            'raw_melhor_faixas' => [
+                11 => 0,
+                12 => 0,
+                13 => 0,
+                14 => 0,
+                15 => 0,
+            ],
+            'raw_14_15_total' => 0,
+            'raw_14_15_preservados' => 0,
+            'raw_14_15_loss' => 0,
+            'near_15_raw_candidates' => 0,
+            'raw_15_candidates' => 0,
+            'strategy_stats' => [],
             'acertos_por_concurso' => [],
             'melhor_resultado' => [
                 'concurso' => null,
@@ -82,6 +106,11 @@ class BacktestService
 
             if ($numeroConcurso <= $inicioConcurso) {
                 continue;
+            }
+
+            if ($seed !== null) {
+                mt_srand($seed + $numeroConcurso);
+                srand($seed + $numeroConcurso);
             }
 
             $historico = $this->historicalDataService->getUntilContest($numeroConcurso - 1);
@@ -126,7 +155,26 @@ class BacktestService
                 $candidateWeights
             );
 
-            if (empty($candidateGames)) {
+            $candidatePayloads = $this->normalizeCandidatePayloads(
+                $candidateGames,
+                'baseline_explosive',
+                'explosive',
+                $cycleContext['faltantes'] ?? []
+            );
+
+            $eliteCandidatePayloads = $this->highCeilingCandidateGeneratorService->generate(
+                $targetCandidates,
+                $frequencyContext,
+                $delayContext,
+                $correlationContext,
+                $structureContext,
+                $candidateWeights,
+                $historico
+            );
+
+            $candidatePayloads = $this->mergeCandidatePayloads($candidatePayloads, $eliteCandidatePayloads);
+
+            if (empty($candidatePayloads)) {
                 continue;
             }
 
@@ -134,33 +182,38 @@ class BacktestService
 
             $bestRaw = 0;
             $bestRawGame = [];
+            $bestRawCandidate = [];
 
-            foreach ($candidateGames as $game) {
+            foreach ($candidatePayloads as $candidate) {
+                $game = $candidate['dezenas'] ?? [];
                 $hits = count(array_intersect($game, $resultadoReal));
+                $strategy = $candidate['strategy'] ?? 'unknown';
+
+                $this->recordStrategyStats($resumo['strategy_stats'], $strategy, $hits);
+
+                if ($hits === 14) {
+                    $resumo['near_15_raw_candidates']++;
+                }
+
+                if ($hits === 15) {
+                    $resumo['raw_15_candidates']++;
+                }
 
                 if ($hits > $bestRaw) {
                     $bestRaw = $hits;
                     $bestRawGame = $game;
+                    $bestRawCandidate = $candidate;
                 }
             }
 
-            $candidates = [];
-
-            foreach ($candidateGames as $game) {
-                $candidates[] = [
-                    'dezenas' => $game,
-                    'profile' => 'aggressive',
-                    'cycle_missing' => $cycleContext['faltantes'] ?? [],
-                ];
-            }
-
             $rankedGames = $this->gameScoringService->rank(
-                $candidates,
+                $candidatePayloads,
                 $frequencyContext,
                 $delayContext,
                 $correlationContext,
                 $structureContext,
-                $concursoBase
+                $concursoBase,
+                $historico
             );
 
             $rankedGames = $this->coreClusterPreservationService->preserve($rankedGames);
@@ -171,20 +224,7 @@ class BacktestService
 
             $rankingAudit = $this->auditRanking($rankedGames, $bestRawGame, $resultadoReal);
 
-            $oracleMode = (bool) config('lottus.backtest.oracle_mode', false);
-
-if ($oracleMode) {
-    usort($rankedGames, function ($a, $b) use ($resultadoReal) {
-        $hitsA = count(array_intersect($a['dezenas'] ?? [], $resultadoReal));
-        $hitsB = count(array_intersect($b['dezenas'] ?? [], $resultadoReal));
-
-        return $hitsB <=> $hitsA;
-    });
-
-    $selectedGames = array_slice($rankedGames, 0, $quantidadeJogos);
-} else {
-    $selectedGames = $portfolioOptimizer->optimize($rankedGames, $quantidadeJogos);
-}
+            $selectedGames = $portfolioOptimizer->optimize($rankedGames, $quantidadeJogos);
 
             $melhorAcertoConcurso = 0;
             $melhorJogoConcurso = [];
@@ -215,6 +255,22 @@ if ($oracleMode) {
                 }
             }
 
+            if ($bestRaw >= 11 && $bestRaw <= 15) {
+                $resumo['raw_melhor_faixas'][$bestRaw]++;
+            }
+
+            $rawNoSelected = $this->selectedContainsGame($selectedGames, $bestRawGame);
+
+            if ($bestRaw >= 14) {
+                $resumo['raw_14_15_total']++;
+
+                if ($melhorAcertoConcurso >= $bestRaw && $rawNoSelected) {
+                    $resumo['raw_14_15_preservados']++;
+                } else {
+                    $resumo['raw_14_15_loss']++;
+                }
+            }
+
             $resumo['concursos_testados']++;
             $resumo['acertos_por_concurso'][] = [
                 'concurso' => $numeroConcurso,
@@ -227,13 +283,20 @@ if ($oracleMode) {
                 'concurso' => $numeroConcurso,
                 'raw' => $bestRaw,
                 'raw_jogo' => $bestRawGame,
+                'raw_strategy' => $bestRawCandidate['strategy'] ?? null,
                 'raw_rank' => $rankingAudit['rank'],
                 'raw_score' => $rankingAudit['score'],
                 'raw_extreme_score' => $rankingAudit['extreme_score'],
                 'raw_stat_score' => $rankingAudit['stat_score'],
                 'raw_structure_score' => $rankingAudit['structure_score'],
+                'raw_historical_peak_score' => $rankingAudit['historical_peak_score'],
+                'raw_historical_max_hits' => $rankingAudit['historical_max_hits'],
+                'raw_historical_13_plus' => $rankingAudit['historical_13_plus'],
+                'raw_historical_14_plus' => $rankingAudit['historical_14_plus'],
                 'selected' => $melhorAcertoConcurso,
                 'selected_jogo' => $melhorJogoConcurso,
+                'selected_strategy' => $selectedAudit['strategy'] ?? null,
+                'raw_no_selected' => $rawNoSelected,
                 'selected_rank' => $selectedAudit['rank'] ?? null,
                 'selected_score' => $selectedAudit['score'] ?? null,
                 'selected_extreme_score' => $selectedAudit['extreme_score'] ?? null,
@@ -241,6 +304,10 @@ if ($oracleMode) {
                 'selected_structure_score' => $selectedAudit['structure_score'] ?? null,
                 'loss' => $bestRaw - $melhorAcertoConcurso,
                 'motivo_loss' => $this->diagnoseLoss($rankingAudit, $selectedAudit, $bestRaw, $melhorAcertoConcurso),
+                'raw_missing_numbers' => array_values(array_diff($resultadoReal, $bestRawGame)),
+                'raw_extra_numbers' => array_values(array_diff($bestRawGame, $resultadoReal)),
+                'selected_missing_numbers' => array_values(array_diff($resultadoReal, $melhorJogoConcurso)),
+                'selected_extra_numbers' => array_values(array_diff($melhorJogoConcurso, $resultadoReal)),
                 'resultado' => $resultadoReal,
             ];
         }
@@ -268,6 +335,11 @@ if ($oracleMode) {
                 'extreme_score' => round((float) ($game['extreme_score'] ?? 0), 6),
                 'stat_score' => round((float) ($game['stat_score'] ?? 0), 6),
                 'structure_score' => round((float) ($game['structure_score'] ?? 0), 6),
+                'historical_peak_score' => round((float) ($game['historical_peak_score'] ?? 0), 6),
+                'historical_max_hits' => (int) ($game['historical_max_hits'] ?? 0),
+                'historical_13_plus' => (int) ($game['historical_13_plus'] ?? 0),
+                'historical_14_plus' => (int) ($game['historical_14_plus'] ?? 0),
+                'strategy' => $game['strategy'] ?? null,
                 'hits' => count(array_intersect($game['dezenas'] ?? [], $resultadoReal)),
             ];
         }
@@ -278,8 +350,26 @@ if ($oracleMode) {
             'extreme_score' => null,
             'stat_score' => null,
             'structure_score' => null,
+            'historical_peak_score' => null,
+            'historical_max_hits' => null,
+            'historical_13_plus' => null,
+            'historical_14_plus' => null,
+            'strategy' => null,
             'hits' => count(array_intersect($targetGame, $resultadoReal)),
         ];
+    }
+
+    protected function selectedContainsGame(array $selectedGames, array $targetGame): bool
+    {
+        $targetKey = $this->gameKey($targetGame);
+
+        foreach ($selectedGames as $game) {
+            if ($this->gameKey($game['dezenas'] ?? []) === $targetKey) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function auditSelectedGame(array $rankedGames, array $selectedGame, array $resultadoReal): array
@@ -328,7 +418,86 @@ if ($oracleMode) {
             $taxas[$faixa] = round(($quantidade / $totalJogos) * 100, 4);
         }
 
+        $taxas['13_plus'] = round(((($faixas[13] ?? 0) + ($faixas[14] ?? 0) + ($faixas[15] ?? 0)) / $totalJogos) * 100, 4);
+        $taxas['14_plus'] = round(((($faixas[14] ?? 0) + ($faixas[15] ?? 0)) / $totalJogos) * 100, 4);
+
         return $taxas;
+    }
+
+    protected function recordStrategyStats(array &$stats, string $strategy, int $hits): void
+    {
+        if (! isset($stats[$strategy])) {
+            $stats[$strategy] = [
+                'candidates' => 0,
+                'best_hits' => 0,
+                'raw_13' => 0,
+                'raw_14' => 0,
+                'raw_15' => 0,
+            ];
+        }
+
+        $stats[$strategy]['candidates']++;
+        $stats[$strategy]['best_hits'] = max($stats[$strategy]['best_hits'], $hits);
+
+        if ($hits === 13) {
+            $stats[$strategy]['raw_13']++;
+        } elseif ($hits === 14) {
+            $stats[$strategy]['raw_14']++;
+        } elseif ($hits === 15) {
+            $stats[$strategy]['raw_15']++;
+        }
+    }
+
+    protected function normalizeCandidatePayloads(
+        array $candidateGames,
+        string $strategy,
+        string $profile,
+        array $cycleMissing
+    ): array {
+        $payloads = [];
+
+        foreach ($candidateGames as $candidate) {
+            $game = $candidate['dezenas'] ?? $candidate;
+            $game = array_values(array_unique(array_map('intval', $game)));
+            sort($game);
+
+            if (count($game) !== 15) {
+                continue;
+            }
+
+            $payloads[] = [
+                'dezenas' => $game,
+                'profile' => $candidate['profile'] ?? $profile,
+                'strategy' => $candidate['strategy'] ?? $strategy,
+                'cycle_missing' => $candidate['cycle_missing'] ?? $cycleMissing,
+            ];
+        }
+
+        return $payloads;
+    }
+
+    protected function mergeCandidatePayloads(array ...$groups): array
+    {
+        $merged = [];
+        $seen = [];
+
+        foreach ($groups as $group) {
+            foreach ($group as $candidate) {
+                $game = $candidate['dezenas'] ?? [];
+                sort($game);
+                $key = implode('-', $game);
+
+                if (count($game) !== 15 || isset($seen[$key])) {
+                    continue;
+                }
+
+                $seen[$key] = true;
+                $candidate['dezenas'] = $game;
+                $merged[] = $candidate;
+            }
+        }
+
+        return $merged;
     }
 
     protected function extractNumbers(LotofacilConcurso $concurso): array

@@ -14,21 +14,42 @@ class ClusterEliteLockService
             return [];
         }
 
-        $pool = array_values($rankedGames);
+        $clusterTuning = $tuning['cluster_elite_lock'] ?? [];
 
-        $limit = min(
-            max($quantidade * 10, 50),
-            count($pool)
+        if (! (bool) ($clusterTuning['enabled'] ?? false)) {
+            return [];
+        }
+
+        $selectionLimit = min(
+            $quantidade,
+            max(0, (int) ($clusterTuning['limit'] ?? 0))
         );
 
-        $pool = array_slice($pool, 0, $limit);
+        if ($selectionLimit === 0) {
+            return [];
+        }
 
-        $clusters = $this->buildClusters($pool);
+        $pool = array_values($rankedGames);
+
+        $scanLimit = min(
+            max((int) ($clusterTuning['pool_limit'] ?? 50), $selectionLimit),
+            count($pool)
+        );
+        $minOverlap = (int) ($clusterTuning['min_overlap'] ?? 11);
+        $minClusterSize = max(1, (int) ($clusterTuning['min_cluster_size'] ?? 3));
+
+        $pool = array_slice($pool, 0, $scanLimit);
+
+        $clusters = $this->buildClusters($pool, $minOverlap);
 
         $result = [];
         $seen = [];
 
         foreach ($clusters as $cluster) {
+            if (count($cluster) < $minClusterSize) {
+                continue;
+            }
+
             foreach ($cluster as $candidate) {
                 $key = $this->candidateKey($candidate);
 
@@ -54,10 +75,10 @@ class ClusterEliteLockService
             return $scoreB <=> $scoreA;
         });
 
-        return $result;
+        return array_slice($result, 0, $selectionLimit);
     }
 
-    protected function buildClusters(array $pool): array
+    protected function buildClusters(array $pool, int $minOverlap): array
     {
         $clusters = [];
 
@@ -65,7 +86,7 @@ class ClusterEliteLockService
             $inserted = false;
 
             foreach ($clusters as &$cluster) {
-                if ($this->belongsToCluster($candidate, $cluster)) {
+                if ($this->belongsToCluster($candidate, $cluster, $minOverlap)) {
                     $cluster[] = $candidate;
                     $inserted = true;
                     break;
@@ -80,7 +101,7 @@ class ClusterEliteLockService
         return $clusters;
     }
 
-    protected function belongsToCluster(array $candidate, array $cluster): bool
+    protected function belongsToCluster(array $candidate, array $cluster, int $minOverlap): bool
     {
         $candidateNumbers = $candidate['dezenas'] ?? [];
 
@@ -89,7 +110,7 @@ class ClusterEliteLockService
 
             $overlap = count(array_intersect($candidateNumbers, $existingNumbers));
 
-            if ($overlap >= 11) {
+            if ($overlap >= $minOverlap) {
                 return true;
             }
         }

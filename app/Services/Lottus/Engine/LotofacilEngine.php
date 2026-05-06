@@ -10,7 +10,9 @@ use App\Services\Lottus\Analysis\FrequencyAnalysisService;
 use App\Services\Lottus\Analysis\StructureAnalysisService;
 use App\Services\Lottus\Data\HistoricalDataService;
 use App\Services\Lottus\Generation\CandidateGeneratorService;
+use App\Services\Lottus\Generation\CoreClusterPreservationService;
 use App\Services\Lottus\Generation\GameScoringService;
+use App\Services\Lottus\Generation\HighCeilingCandidateGeneratorService;
 use App\Services\Lottus\Generation\PortfolioOptimizerService;
 use App\Services\Lottus\Persistence\GeneratedBetPersistenceService;
 
@@ -24,7 +26,9 @@ class LotofacilEngine
         protected StructureAnalysisService $structureAnalysisService,
         protected CycleAnalysisService $cycleAnalysisService,
         protected CandidateGeneratorService $candidateGeneratorService,
+        protected HighCeilingCandidateGeneratorService $highCeilingCandidateGeneratorService,
         protected GameScoringService $gameScoringService,
+        protected CoreClusterPreservationService $coreClusterPreservationService,
         protected PortfolioOptimizerService $portfolioOptimizerService,
         protected GeneratedBetPersistenceService $generatedBetPersistenceService
     ) {
@@ -60,18 +64,27 @@ class LotofacilEngine
             $weights
         );
 
-        if (empty($candidateGames)) {
+        $candidatePayloads = $this->normalizeCandidatePayloads(
+            $candidateGames,
+            'baseline_explosive',
+            'explosive',
+            $cycleContext['faltantes'] ?? []
+        );
+
+        $eliteCandidatePayloads = $this->highCeilingCandidateGeneratorService->generate(
+            $quantidade,
+            $frequencyContext,
+            $delayContext,
+            $correlationContext,
+            $structureContext,
+            $weights,
+            $historico
+        );
+
+        $candidates = $this->mergeCandidatePayloads($candidatePayloads, $eliteCandidatePayloads);
+
+        if (empty($candidates)) {
             throw new \Exception('Nenhum jogo candidato foi gerado pelo motor.');
-        }
-
-        $candidates = [];
-
-        foreach ($candidateGames as $game) {
-            $candidates[] = [
-                'dezenas' => $game,
-                'profile' => 'explosive',
-                'cycle_missing' => $cycleContext['faltantes'] ?? [],
-            ];
         }
 
         $rankedGames = $this->gameScoringService->rank(
@@ -80,8 +93,11 @@ class LotofacilEngine
             $delayContext,
             $correlationContext,
             $structureContext,
-            $concursoBase
+            $concursoBase,
+            $historico
         );
+
+        $rankedGames = $this->coreClusterPreservationService->preserve($rankedGames);
 
         if (empty($rankedGames)) {
             throw new \Exception('Nenhum jogo ranqueado foi produzido pelo motor.');
@@ -163,5 +179,57 @@ class LotofacilEngine
         sort($numbers);
 
         return $numbers;
+    }
+
+    protected function normalizeCandidatePayloads(
+        array $candidateGames,
+        string $strategy,
+        string $profile,
+        array $cycleMissing
+    ): array {
+        $payloads = [];
+
+        foreach ($candidateGames as $candidate) {
+            $game = $candidate['dezenas'] ?? $candidate;
+            $game = array_values(array_unique(array_map('intval', $game)));
+            sort($game);
+
+            if (count($game) !== 15) {
+                continue;
+            }
+
+            $payloads[] = [
+                'dezenas' => $game,
+                'profile' => $candidate['profile'] ?? $profile,
+                'strategy' => $candidate['strategy'] ?? $strategy,
+                'cycle_missing' => $candidate['cycle_missing'] ?? $cycleMissing,
+            ];
+        }
+
+        return $payloads;
+    }
+
+    protected function mergeCandidatePayloads(array ...$groups): array
+    {
+        $merged = [];
+        $seen = [];
+
+        foreach ($groups as $group) {
+            foreach ($group as $candidate) {
+                $game = $candidate['dezenas'] ?? [];
+                sort($game);
+                $key = implode('-', $game);
+
+                if (count($game) !== 15 || isset($seen[$key])) {
+                    continue;
+                }
+
+                $seen[$key] = true;
+                $candidate['dezenas'] = $game;
+                $merged[] = $candidate;
+            }
+        }
+
+        return $merged;
     }
 }

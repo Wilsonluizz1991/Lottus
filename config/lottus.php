@@ -36,12 +36,13 @@ return [
     */
 
     'generator' => [
-        'attempts' => 8000,
-        'target_candidates' => 800,
-    ],
-
-    'backtest' => [
-        'oracle_mode' => env('LOTTUS_ORACLE_MODE', false),
+        'attempts' => 14000,
+        'target_candidates' => 1200,
+        'elite' => [
+            'enabled' => true,
+            'attempts' => 14000,
+            'target_candidates' => 1100,
+        ],
     ],
 
     /*
