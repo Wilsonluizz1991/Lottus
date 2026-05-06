@@ -147,7 +147,7 @@ return [
     'elite_selection_audit' => [
         'enabled' => true,
         'top_raw_limit' => 10,
-        'log_channel' => 'daily',
+        'log_channel' => 'single',
     ],
 
     'controlled_diversity' => [
@@ -373,7 +373,7 @@ return [
             'elite_selection_audit' => [
                 'enabled' => true,
                 'top_raw_limit' => 10,
-                'log_channel' => 'daily',
+                'log_channel' => 'single',
             ],
 
             'controlled_diversity' => [

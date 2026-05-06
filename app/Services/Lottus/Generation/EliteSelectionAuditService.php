@@ -8,6 +8,15 @@ class EliteSelectionAuditService
 {
     public function audit(array $rankedGames, array $selectedGames, array $tuning, int $quantidade): void
     {
+        try {
+            $this->writeAudit($rankedGames, $selectedGames, $tuning, $quantidade);
+        } catch (\Throwable) {
+            // Auditoria e telemetria nao podem impedir a geracao comercial.
+        }
+    }
+
+    protected function writeAudit(array $rankedGames, array $selectedGames, array $tuning, int $quantidade): void
+    {
         if (! (bool) $this->tuningValue($tuning, 'elite_selection_audit.enabled', false)) {
             return;
         }
@@ -54,7 +63,7 @@ class EliteSelectionAuditService
             ];
         }
 
-        Log::channel($this->tuningValue($tuning, 'elite_selection_audit.log_channel', 'daily'))->info(
+        Log::channel($this->tuningValue($tuning, 'elite_selection_audit.log_channel', 'single'))->info(
             'Lottus Elite Selection Audit',
             [
                 'quantidade' => $quantidade,
