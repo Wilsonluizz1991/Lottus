@@ -102,32 +102,39 @@ class FechamentoEngine
 
             $basesCompetidoras = [];
 
-            foreach ($basesPrimarias as $basePrimaria) {
-                $basePrimaria = $this->normalizeGame($basePrimaria);
-
-                if (count($basePrimaria) !== $quantidadeDezenas) {
-                    continue;
-                }
-
-                $basesSelecionadas = $this->baseCompetitionService->selectTopBases(
-                    primaryBase: $basePrimaria,
-                    quantidadeDezenas: $quantidadeDezenas,
-                    historico: $historico,
-                    frequencyContext: $frequencyContext,
-                    delayContext: $delayContext,
-                    correlationContext: $correlationContext,
-                    structureContext: $structureContext,
-                    cycleContext: $cycleContext,
-                    concursoBase: $concursoBase,
-                    patternContext: $patternContext,
-                    limit: $this->commercialGenerationLimit('top_bases_per_primary', $quantidadeDezenas, 3)
+            if ($this->shouldSkipCommercialBaseCompetition($quantidadeDezenas)) {
+                $basesCompetidoras = array_map(
+                    fn (array $base): array => $this->normalizeGame($base),
+                    $basesPrimarias
                 );
+            } else {
+                foreach ($basesPrimarias as $basePrimaria) {
+                    $basePrimaria = $this->normalizeGame($basePrimaria);
 
-                foreach ($basesSelecionadas as $baseSelecionada) {
-                    $baseSelecionada = $this->normalizeGame($baseSelecionada);
+                    if (count($basePrimaria) !== $quantidadeDezenas) {
+                        continue;
+                    }
 
-                    if (count($baseSelecionada) === $quantidadeDezenas) {
-                        $basesCompetidoras[] = $baseSelecionada;
+                    $basesSelecionadas = $this->baseCompetitionService->selectTopBases(
+                        primaryBase: $basePrimaria,
+                        quantidadeDezenas: $quantidadeDezenas,
+                        historico: $historico,
+                        frequencyContext: $frequencyContext,
+                        delayContext: $delayContext,
+                        correlationContext: $correlationContext,
+                        structureContext: $structureContext,
+                        cycleContext: $cycleContext,
+                        concursoBase: $concursoBase,
+                        patternContext: $patternContext,
+                        limit: $this->commercialGenerationLimit('top_bases_per_primary', $quantidadeDezenas, 3)
+                    );
+
+                    foreach ($basesSelecionadas as $baseSelecionada) {
+                        $baseSelecionada = $this->normalizeGame($baseSelecionada);
+
+                        if (count($baseSelecionada) === $quantidadeDezenas) {
+                            $basesCompetidoras[] = $baseSelecionada;
+                        }
                     }
                 }
             }
@@ -452,6 +459,14 @@ class FechamentoEngine
         }
 
         return max(1, (int) $configured);
+    }
+
+    protected function shouldSkipCommercialBaseCompetition(int $quantidadeDezenas): bool
+    {
+        return (bool) config(
+            "lottus_fechamento.commercial_generation.skip_base_competition.{$quantidadeDezenas}",
+            (bool) config('lottus_fechamento.commercial_generation.skip_base_competition.default', false)
+        );
     }
 
     protected function resolveRegeneratedCommercialBase(

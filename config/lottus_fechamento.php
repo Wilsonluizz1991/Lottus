@@ -86,7 +86,7 @@ return [
     'commercial_generation' => [
         'primary_base_limit' => [
             'default' => 12,
-            20 => 8,
+            20 => 4,
         ],
         'top_bases_per_primary' => [
             'default' => 3,
@@ -94,7 +94,11 @@ return [
         ],
         'max_competitor_bases' => [
             'default' => 12,
-            20 => 8,
+            20 => 4,
+        ],
+        'skip_base_competition' => [
+            'default' => false,
+            20 => true,
         ],
     ],
 
