@@ -12,5 +12,5 @@ interface LearningStrategyInterface
 
     public function learn(
         LotofacilConcurso $concursoAtual
-    ): void;
+    ): array;
 }

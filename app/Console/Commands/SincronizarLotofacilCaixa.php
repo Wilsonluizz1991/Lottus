@@ -2,7 +2,7 @@
 
 namespace App\Console\Commands;
 
-use App\Jobs\Lottus\ProcessarAprendizadoFechamentoJob;
+use App\Events\LotofacilConcursoSincronizado;
 use App\Models\LotofacilConcurso;
 use App\Services\CaixaLotofacilService;
 use Carbon\Carbon;
@@ -105,10 +105,10 @@ class SincronizarLotofacilCaixa extends Command
                 'informado_manualmente' => false,
             ]);
 
-            ProcessarAprendizadoFechamentoJob::dispatch($numeroConcurso);
+            LotofacilConcursoSincronizado::dispatch($numeroConcurso);
 
             $this->info("Concurso {$numeroConcurso} salvo com sucesso.");
-            $this->info("Aprendizado do fechamento enfileirado para o concurso {$numeroConcurso}.");
+            $this->info("Evento de aprendizado adaptativo disparado para o concurso {$numeroConcurso}.");
 
             return self::SUCCESS;
         } catch (\Throwable $e) {

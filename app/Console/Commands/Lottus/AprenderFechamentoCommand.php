@@ -3,7 +3,7 @@
 namespace App\Console\Commands\Lottus;
 
 use App\Models\LotofacilConcurso;
-use App\Services\Lottus\Learning\LearningEngine;
+use App\Services\Lottus\Learning\AdaptiveLearningRunService;
 use Illuminate\Console\Command;
 
 class AprenderFechamentoCommand extends Command
@@ -12,9 +12,8 @@ class AprenderFechamentoCommand extends Command
 
     protected $description = 'Processa aprendizado do motor de fechamento para um concurso específico da Lotofácil';
 
-    public function handle(
-        LearningEngine $learningEngine
-    ): int {
+    public function handle(AdaptiveLearningRunService $runService): int
+    {
         $concurso = (int) $this->argument('concurso');
 
         $concursoAtual = LotofacilConcurso::query()
@@ -27,11 +26,20 @@ class AprenderFechamentoCommand extends Command
             return self::FAILURE;
         }
 
-        $this->info("Iniciando aprendizado do fechamento para o concurso {$concurso}...");
+        $this->info("Iniciando aprendizado controlado do fechamento para o concurso {$concurso}...");
 
-        $learningEngine->learnFromContest($concursoAtual);
+        $run = $runService->enqueue(
+            concurso: $concursoAtual->concurso,
+            triggeredBy: 'manual_legacy_command',
+            force: true
+        );
+
+        $processedRun = $runService->processRun($run->id);
 
         $this->info("Aprendizado do fechamento processado com sucesso para o concurso {$concurso}.");
+        $this->line("Run: {$processedRun->id}");
+        $this->line("Status: {$processedRun->status}");
+        $this->line("Versão de calibração: {$processedRun->calibration_version}");
 
         return self::SUCCESS;
     }

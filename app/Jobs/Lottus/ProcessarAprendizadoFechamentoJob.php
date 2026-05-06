@@ -2,8 +2,8 @@
 
 namespace App\Jobs\Lottus;
 
-use App\Models\LotofacilConcurso;
-use App\Services\Lottus\Learning\LearningEngine;
+use App\Jobs\ProcessAdaptiveLearning;
+use App\Services\Lottus\Learning\AdaptiveLearningRunService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
@@ -20,26 +20,19 @@ class ProcessarAprendizadoFechamentoJob implements ShouldQueue
     ) {
     }
 
-    public function handle(
-        LearningEngine $learningEngine
-    ): void {
-        $concursoAtual = LotofacilConcurso::query()
-            ->where('concurso', $this->concurso)
-            ->first();
+    public function handle(AdaptiveLearningRunService $runService): void
+    {
+        $run = $runService->enqueue(
+            concurso: $this->concurso,
+            triggeredBy: 'legacy_job',
+            force: false
+        );
 
-        if (! $concursoAtual) {
-            logger()->warning('FECHAMENTO_LEARNING_JOB_CONCURSO_NOT_FOUND', [
-                'concurso' => $this->concurso,
-            ]);
-
+        if (! $run) {
             return;
         }
 
-        $learningEngine->learnFromContest($concursoAtual);
-
-        logger()->info('FECHAMENTO_LEARNING_JOB_DONE', [
-            'concurso' => $this->concurso,
-        ]);
+        ProcessAdaptiveLearning::dispatch($run->id)->onQueue('learning');
     }
 
     public function failed(\Throwable $exception): void

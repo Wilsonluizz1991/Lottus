@@ -136,6 +136,38 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Snapshots de aprendizado adaptativo
+    |--------------------------------------------------------------------------
+    |
+    | O fechamento pode ler a calibracao gerada apos cada novo concurso. Por
+    | seguranca, os sinais aprendidos ficam inicialmente em modo sombra:
+    | carregados, logados e disponiveis para A/B, mas sem alterar o ranking
+    | nem inserir candidatos enquanto nao provarem ganho contra o baseline.
+    |
+    */
+
+    'learning_snapshots' => [
+        'enabled' => true,
+        'use_promoted' => true,
+        'allow_unvalidated_effects' => false,
+        'affect_ranking' => false,
+        'generate_candidates' => false,
+        'validation_mode' => false,
+        'validation_snapshot_id' => null,
+        'validation' => [
+            'enabled' => true,
+            'quantidades' => [18],
+            'bases' => 48,
+            'strategies' => ['ranking', 'candidates', 'combined'],
+            'window' => 10,
+            'min_validations' => 3,
+            'min_win_rate' => 0.6,
+            'min_elite_delta' => 1,
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Metadata comercial
     |--------------------------------------------------------------------------
     */

@@ -3,6 +3,7 @@
 namespace App\Services\Lottus\Fechamento;
 
 use App\Models\LotofacilConcurso;
+use App\Models\LottusLearningSnapshot;
 use App\Services\Lottus\Learning\Scoring\FechamentoBaseDecisionService;
 use Illuminate\Support\Collection;
 
@@ -84,9 +85,16 @@ class FechamentoBaseCompetitionService
             concursoBase: $concursoBase
         );
 
+        $learningSnapshot = $this->activeLearningSnapshot($concursoBase);
+        $currentProfiles = $this->applyLearningSnapshotToProfiles($currentProfiles, $learningSnapshot, $quantidadeDezenas);
+
         $this->lastNumberScores = $currentProfiles;
 
-        $strategyDefinitions = $this->strategyDefinitions();
+        $strategyDefinitions = $this->applyLearningSnapshotToStrategyDefinitions(
+            strategyDefinitions: $this->strategyDefinitions(),
+            learningSnapshot: $learningSnapshot,
+            quantidadeDezenas: $quantidadeDezenas
+        );
         $walkForwardReport = $this->runWalkForwardTournament(
             historicalContests: $historicalContests,
             quantidadeDezenas: $quantidadeDezenas,
@@ -147,9 +155,56 @@ class FechamentoBaseCompetitionService
             patternContext: $patternContext
         );
 
+        $candidates = $this->addLearningSnapshotCandidates(
+            candidates: $candidates,
+            currentProfiles: $currentProfiles,
+            historicalContests: $historicalContests,
+            quantidadeDezenas: $quantidadeDezenas,
+            concursoBase: $concursoBase,
+            learningSnapshot: $learningSnapshot
+        );
+
         $candidates = $this->uniqueCandidates($candidates);
 
-        usort($candidates, function (array $a, array $b): int {
+        $candidates = $this->attachSimulationMetricsToCandidates(
+            candidates: $candidates,
+            historicalContests: $historicalContests,
+            quantidadeDezenas: $quantidadeDezenas
+        );
+
+        $candidates = $this->applyLearningSnapshotToCandidates(
+            candidates: $candidates,
+            learningSnapshot: $learningSnapshot,
+            quantidadeDezenas: $quantidadeDezenas
+        );
+
+        $peakCandidates = array_values(array_filter(
+            $candidates,
+            fn (array $candidate): bool => (int) ($candidate['simulation']['max_hits'] ?? 0) >= 14
+        ));
+
+        $rankingPool = ! empty($peakCandidates) ? $peakCandidates : $candidates;
+
+        usort($rankingPool, function (array $a, array $b): int {
+            $aMaxHits = (int) ($a['simulation']['max_hits'] ?? 0);
+            $bMaxHits = (int) ($b['simulation']['max_hits'] ?? 0);
+
+            if (($aMaxHits >= 14) !== ($bMaxHits >= 14)) {
+                return $aMaxHits >= 14 ? -1 : 1;
+            }
+
+            if (($aMaxHits >= 13) !== ($bMaxHits >= 13)) {
+                return $aMaxHits >= 13 ? -1 : 1;
+            }
+
+            if (($a['simulation_score'] ?? 0.0) !== ($b['simulation_score'] ?? 0.0)) {
+                return ($b['simulation_score'] ?? 0.0) <=> ($a['simulation_score'] ?? 0.0);
+            }
+
+            if ($aMaxHits !== $bMaxHits) {
+                return $bMaxHits <=> $aMaxHits;
+            }
+
             if (($a['fitness'] ?? 0.0) === ($b['fitness'] ?? 0.0)) {
                 return strcmp($a['key'] ?? '', $b['key'] ?? '');
             }
@@ -157,45 +212,21 @@ class FechamentoBaseCompetitionService
             return ($b['fitness'] ?? 0.0) <=> ($a['fitness'] ?? 0.0);
         });
 
+        $decisionCandidates = array_slice($rankingPool, 0, max($limit * 4, 24));
+
         $decision = $this->decisionService->decide(
-            bases: array_map(fn (array $candidate): array => $candidate['numbers'], $candidates),
+            bases: array_map(fn (array $candidate): array => $candidate['numbers'], $decisionCandidates),
             quantidadeDezenas: $quantidadeDezenas,
             historico: $historico,
             concursoBase: $concursoBase,
             limit: $limit
         );
 
-        $selectedBases = $decision['bases'] ?? [];
-
-        if (! empty($selectedBases)) {
-            $selectedKeys = [];
-
-            foreach ($selectedBases as $base) {
-                $selectedKeys[$this->key($base)] = true;
-            }
-
-            $candidateMap = [];
-
-            foreach ($candidates as $candidate) {
-                $candidateMap[$this->key($candidate['numbers'] ?? [])] = $candidate;
-            }
-
-            $rankedCandidates = [];
-
-            foreach ($selectedBases as $base) {
-                $key = $this->key($base);
-
-                if (isset($candidateMap[$key])) {
-                    $rankedCandidates[] = $candidateMap[$key];
-                }
-            }
-
-            if (! empty($rankedCandidates)) {
-                $candidates = $rankedCandidates;
-            }
-        }
-
-        $candidates = array_slice($candidates, 0, $limit);
+        $candidates = $this->composeRankedOutputCandidates(
+            rankingPool: $rankingPool,
+            limit: $limit,
+            reserveRepeatSurvival: true
+        );
 
         if (empty($candidates)) {
             $candidates = [[
@@ -218,6 +249,12 @@ class FechamentoBaseCompetitionService
             'walk_forward_report' => $walkForwardReport,
             'pattern_regime' => $patternContext['regime'] ?? null,
             'pattern_confidence' => $patternContext['confidence'] ?? null,
+            'peak_filter_applied' => ! empty($peakCandidates),
+            'peak_candidates_count' => count($peakCandidates),
+            'learning_snapshot_id' => $learningSnapshot?->id,
+            'learning_snapshot_version' => $learningSnapshot?->calibration_version,
+            'learning_snapshot_validation_status' => $learningSnapshot?->validation_status,
+            'learning_snapshot_promoted_strategy' => $learningSnapshot?->promoted_strategy,
         ];
 
         logger()->info('FECHAMENTO_BASE_COMPETITION_LEARNING_DECISION', $this->lastCompetitionReport);
@@ -233,9 +270,321 @@ class FechamentoBaseCompetitionService
         return $this->lastNumberScores;
     }
 
+    protected function composeRankedOutputCandidates(
+        array $rankingPool,
+        int $limit,
+        bool $reserveRepeatSurvival
+    ): array {
+        if (! $reserveRepeatSurvival || $limit < 3) {
+            return array_slice($rankingPool, 0, $limit);
+        }
+
+        $repeatSurvivalCandidates = array_values(array_filter(
+            $rankingPool,
+            fn (array $candidate): bool => str_starts_with((string) ($candidate['strategy'] ?? ''), 'repeat_survival_')
+        ));
+
+        if (empty($repeatSurvivalCandidates)) {
+            return array_slice($rankingPool, 0, $limit);
+        }
+
+        usort($repeatSurvivalCandidates, function (array $a, array $b): int {
+            $aPriority = $this->repeatSurvivalPriority((string) ($a['strategy'] ?? ''));
+            $bPriority = $this->repeatSurvivalPriority((string) ($b['strategy'] ?? ''));
+
+            if ($aPriority !== $bPriority) {
+                return $bPriority <=> $aPriority;
+            }
+
+            if (($a['simulation_score'] ?? 0.0) !== ($b['simulation_score'] ?? 0.0)) {
+                return ($b['simulation_score'] ?? 0.0) <=> ($a['simulation_score'] ?? 0.0);
+            }
+
+            return ($b['fitness'] ?? 0.0) <=> ($a['fitness'] ?? 0.0);
+        });
+
+        $reservedCount = min(3, max(1, (int) floor($limit / 2)), count($repeatSurvivalCandidates));
+        $selected = array_slice($repeatSurvivalCandidates, 0, $reservedCount);
+        $selectedKeys = array_fill_keys(array_map(fn (array $candidate): string => (string) ($candidate['key'] ?? ''), $selected), true);
+
+        foreach ($rankingPool as $candidate) {
+            if (count($selected) >= $limit) {
+                break;
+            }
+
+            $key = (string) ($candidate['key'] ?? '');
+
+            if (isset($selectedKeys[$key])) {
+                continue;
+            }
+
+            $selected[] = $candidate;
+            $selectedKeys[$key] = true;
+        }
+
+        return array_slice($selected, 0, $limit);
+    }
+
+    protected function repeatSurvivalPriority(string $strategy): float
+    {
+        if (! preg_match('/_(\d+)_(\d+)$/', $strategy, $matches)) {
+            return 0.0;
+        }
+
+        $repeatTarget = (int) $matches[1];
+        $highCount = (int) $matches[2];
+        $targetHighCount = max(2, (int) round($repeatTarget * 0.30));
+
+        return 100.0
+            - (abs(11 - $repeatTarget) * 10.0)
+            - (abs($targetHighCount - $highCount) * 4.0);
+    }
+
     public function getLastCompetitionReport(): array
     {
         return $this->lastCompetitionReport;
+    }
+
+    protected function activeLearningSnapshot(LotofacilConcurso $concursoBase): ?LottusLearningSnapshot
+    {
+        if (! (bool) config('lottus_fechamento.learning_snapshots.enabled', true)) {
+            return null;
+        }
+
+        $validationSnapshotId = config('lottus_fechamento.learning_snapshots.validation_snapshot_id');
+
+        if ($validationSnapshotId) {
+            return LottusLearningSnapshot::query()
+                ->whereKey((int) $validationSnapshotId)
+                ->where('concurso', (int) $concursoBase->concurso)
+                ->where('target_concurso', ((int) $concursoBase->concurso) + 1)
+                ->first();
+        }
+
+        return LottusLearningSnapshot::query()
+            ->where('concurso', (int) $concursoBase->concurso)
+            ->where('target_concurso', ((int) $concursoBase->concurso) + 1)
+            ->orderByDesc('calibration_version')
+            ->first();
+    }
+
+    protected function applyLearningSnapshotToProfiles(
+        array $profiles,
+        ?LottusLearningSnapshot $learningSnapshot,
+        int $quantidadeDezenas
+    ): array
+    {
+        return $profiles;
+    }
+
+    protected function applyLearningSnapshotToStrategyDefinitions(
+        array $strategyDefinitions,
+        ?LottusLearningSnapshot $learningSnapshot,
+        int $quantidadeDezenas
+    ): array {
+        return $strategyDefinitions;
+    }
+
+    protected function applyLearningSnapshotToCandidates(
+        array $candidates,
+        ?LottusLearningSnapshot $learningSnapshot,
+        int $quantidadeDezenas
+    ): array {
+        if (
+            ! $learningSnapshot
+            || ! $this->snapshotHasEliteSignal($learningSnapshot, $quantidadeDezenas)
+            || ! $this->shouldApplyLearningRanking($learningSnapshot)
+        ) {
+            return $candidates;
+        }
+
+        $pairBias = $learningSnapshot->pair_bias ?? [];
+        $structureBias = $learningSnapshot->structure_bias[(string) $quantidadeDezenas] ?? [];
+        $rawElite = $learningSnapshot->raw_elite_protection[(string) $quantidadeDezenas] ?? [];
+
+        foreach ($candidates as &$candidate) {
+            $numbers = $this->normalizeNumbers($candidate['numbers'] ?? []);
+            $pairScore = $this->pairBiasScore($numbers, $pairBias);
+            $structureScore = $this->structureBiasScore($numbers, $structureBias);
+            $eliteScore = $this->rawEliteSnapshotScore($rawElite);
+
+            $learningScore = round(
+                ($pairScore * 24.0) +
+                ($structureScore * 14.0) +
+                ($eliteScore * 18.0),
+                8
+            );
+
+            $candidate['learning_snapshot_score'] = $learningScore;
+            $candidate['fitness'] = round(((float) ($candidate['fitness'] ?? 0.0)) + $learningScore, 8);
+            $candidate['simulation_score'] = round(((float) ($candidate['simulation_score'] ?? 0.0)) + ($learningScore * 0.45), 8);
+        }
+
+        unset($candidate);
+
+        return $candidates;
+    }
+
+    protected function numberBiasFromPairBias(array $pairBias): array
+    {
+        if (empty($pairBias)) {
+            return [];
+        }
+
+        $max = max(1, max(array_map('intval', $pairBias)));
+        $scores = array_fill_keys(range(1, 25), 0.0);
+
+        foreach ($pairBias as $pair => $count) {
+            $parts = array_map('intval', explode('-', (string) $pair));
+
+            if (count($parts) !== 2) {
+                continue;
+            }
+
+            $value = ((int) $count) / $max;
+            $scores[$parts[0]] = ($scores[$parts[0]] ?? 0.0) + $value;
+            $scores[$parts[1]] = ($scores[$parts[1]] ?? 0.0) + $value;
+        }
+
+        $scoreMax = max(1.0, max($scores));
+
+        foreach ($scores as $number => $score) {
+            $scores[$number] = round($score / $scoreMax, 8);
+        }
+
+        return $scores;
+    }
+
+    protected function pairBiasScore(array $numbers, array $pairBias): float
+    {
+        $numbers = $this->normalizeNumbers($numbers);
+
+        if (count($numbers) < 2 || empty($pairBias)) {
+            return 0.0;
+        }
+
+        $max = max(1, max(array_map('intval', $pairBias)));
+        $score = 0.0;
+        $pairs = 0;
+
+        for ($i = 0; $i < count($numbers); $i++) {
+            for ($j = $i + 1; $j < count($numbers); $j++) {
+                $key = $numbers[$i] . '-' . $numbers[$j];
+                $score += ((int) ($pairBias[$key] ?? 0)) / $max;
+                $pairs++;
+            }
+        }
+
+        return $pairs > 0 ? max(0.0, min(1.0, $score / $pairs)) : 0.0;
+    }
+
+    protected function structureBiasScore(array $numbers, array $structureBias): float
+    {
+        $numbers = $this->normalizeNumbers($numbers);
+
+        if (empty($numbers) || empty($structureBias)) {
+            return 0.0;
+        }
+
+        $avgBaseSum = (float) ($structureBias['avg_base_sum'] ?? 0.0);
+        $avgOddCount = (float) ($structureBias['avg_odd_count'] ?? 0.0);
+        $maxHits = (int) ($structureBias['max_hits'] ?? 0);
+
+        $sumScore = $avgBaseSum > 0.0
+            ? max(0.0, 1.0 - (abs(array_sum($numbers) - $avgBaseSum) / 80.0))
+            : 0.0;
+
+        $oddCount = count(array_filter($numbers, fn (int $number): bool => $number % 2 !== 0));
+        $oddScore = $avgOddCount > 0.0
+            ? max(0.0, 1.0 - (abs($oddCount - $avgOddCount) / 8.0))
+            : 0.0;
+
+        $peakScore = $maxHits >= 14 ? 1.0 : ($maxHits >= 13 ? 0.55 : 0.20);
+
+        return max(0.0, min(1.0, ($sumScore * 0.35) + ($oddScore * 0.25) + ($peakScore * 0.40)));
+    }
+
+    protected function rawEliteSnapshotScore(array $rawElite): float
+    {
+        if (empty($rawElite)) {
+            return 0.0;
+        }
+
+        $samples = max(1, (int) ($rawElite['samples'] ?? 1));
+        $raw13 = (int) ($rawElite['raw_13_plus'] ?? 0);
+        $raw14 = (int) ($rawElite['raw_14_plus'] ?? 0);
+        $raw15 = (int) ($rawElite['raw_15'] ?? 0);
+        $maxHits = (int) ($rawElite['max_hits'] ?? 0);
+
+        return max(0.0, min(1.0,
+            (($raw13 / $samples) * 0.25) +
+            (($raw14 / $samples) * 0.45) +
+            (($raw15 / $samples) * 0.20) +
+            ($maxHits >= 14 ? 0.10 : 0.0)
+        ));
+    }
+
+    protected function snapshotHasEliteSignal(LottusLearningSnapshot $learningSnapshot, int $quantidadeDezenas): bool
+    {
+        $rawElite = $learningSnapshot->raw_elite_protection[(string) $quantidadeDezenas] ?? [];
+
+        if (empty($rawElite) || ! is_array($rawElite)) {
+            return false;
+        }
+
+        return ((int) ($rawElite['max_hits'] ?? 0)) >= 14
+            || ((int) ($rawElite['raw_14_plus'] ?? 0)) > 0
+            || ((int) ($rawElite['raw_15'] ?? 0)) > 0;
+    }
+
+    protected function shouldApplyLearningRanking(LottusLearningSnapshot $learningSnapshot): bool
+    {
+        if ((bool) config('lottus_fechamento.learning_snapshots.validation_mode', false)) {
+            return (bool) config('lottus_fechamento.learning_snapshots.affect_ranking', false);
+        }
+
+        if (
+            (bool) config('lottus_fechamento.learning_snapshots.use_promoted', true)
+            && $this->snapshotPromotedFor($learningSnapshot, [
+                LottusLearningSnapshot::STRATEGY_RANKING,
+                LottusLearningSnapshot::STRATEGY_COMBINED,
+            ])
+        ) {
+            return true;
+        }
+
+        return (bool) config('lottus_fechamento.learning_snapshots.allow_unvalidated_effects', false)
+            && (bool) config('lottus_fechamento.learning_snapshots.affect_ranking', false);
+    }
+
+    protected function shouldGenerateLearningCandidates(LottusLearningSnapshot $learningSnapshot, int $quantidadeDezenas): bool
+    {
+        if (! $this->snapshotHasEliteSignal($learningSnapshot, $quantidadeDezenas)) {
+            return false;
+        }
+
+        if ((bool) config('lottus_fechamento.learning_snapshots.validation_mode', false)) {
+            return (bool) config('lottus_fechamento.learning_snapshots.generate_candidates', false);
+        }
+
+        if (
+            (bool) config('lottus_fechamento.learning_snapshots.use_promoted', true)
+            && $this->snapshotPromotedFor($learningSnapshot, [
+                LottusLearningSnapshot::STRATEGY_CANDIDATES,
+                LottusLearningSnapshot::STRATEGY_COMBINED,
+            ])
+        ) {
+            return true;
+        }
+
+        return (bool) config('lottus_fechamento.learning_snapshots.allow_unvalidated_effects', false)
+            && (bool) config('lottus_fechamento.learning_snapshots.generate_candidates', false);
+    }
+
+    protected function snapshotPromotedFor(LottusLearningSnapshot $learningSnapshot, array $strategies): bool
+    {
+        return $learningSnapshot->validation_status === LottusLearningSnapshot::VALIDATION_PROMOTED
+            && in_array((string) $learningSnapshot->promoted_strategy, $strategies, true);
     }
 
     protected function strategyDefinitions(): array
@@ -689,7 +1038,238 @@ class FechamentoBaseCompetitionService
             );
         }
 
+        $candidates = $this->addRepeatSurvivalCandidates(
+            candidates: $candidates,
+            currentProfiles: $currentProfiles,
+            historicalContests: $historicalContests,
+            quantidadeDezenas: $quantidadeDezenas,
+            concursoBase: $concursoBase,
+            walkForwardMetrics: $topCandidate['walk_forward'] ?? []
+        );
+
         return $candidates;
+    }
+
+    protected function addRepeatSurvivalCandidates(
+        array $candidates,
+        array $currentProfiles,
+        array $historicalContests,
+        int $quantidadeDezenas,
+        LotofacilConcurso $concursoBase,
+        array $walkForwardMetrics
+    ): array {
+        $lastDraw = $this->extractNumbers($concursoBase);
+        $outsideLastDraw = array_values(array_diff(range(1, 25), $lastDraw));
+
+        if (count($lastDraw) !== 15 || count($outsideLastDraw) !== 10) {
+            return $candidates;
+        }
+
+        $outsideRankings = [
+            'score' => $this->rankNumbersByProfile($outsideLastDraw, $currentProfiles, 'score'),
+            'return' => $this->rankNumbersByProfile($outsideLastDraw, $currentProfiles, 'return_pressure'),
+            'frequency' => $this->rankNumbersByProfile($outsideLastDraw, $currentProfiles, 'frequency'),
+        ];
+
+        $repeatHighScore = $this->rankNumbersByProfile($lastDraw, $currentProfiles, 'score');
+        $repeatLowScore = $this->rankNumbersByProfile($lastDraw, $currentProfiles, 'score', true);
+        $repeatHighFrequency = $this->rankNumbersByProfile($lastDraw, $currentProfiles, 'frequency');
+        $repeatLowStability = $this->rankNumbersByProfile($lastDraw, $currentProfiles, 'stability', true);
+
+        $repeatRankings = [
+            'score_barbell' => [$repeatHighScore, $repeatLowScore],
+            'frequency_barbell' => [$repeatHighFrequency, $repeatLowScore],
+            'stability_barbell' => [$repeatHighScore, $repeatLowStability],
+        ];
+
+        $repeatTargets = array_values(array_filter(
+            range(max(6, $quantidadeDezenas - 11), min(12, $quantidadeDezenas - 7)),
+            fn (int $target): bool => $target > 0 && $target < $quantidadeDezenas
+        ));
+
+        foreach ($repeatRankings as $repeatStrategy => [$highRanking, $lowRanking]) {
+            foreach ($repeatTargets as $repeatTarget) {
+                $highMin = max(2, (int) floor($repeatTarget * 0.25));
+                $highMax = min($repeatTarget - 2, (int) ceil($repeatTarget * 0.55));
+
+                for ($highCount = $highMin; $highCount <= $highMax; $highCount++) {
+                    $repeatNumbers = $this->barbellRepeatNumbers(
+                        highRanking: $highRanking,
+                        lowRanking: $lowRanking,
+                        repeatTarget: $repeatTarget,
+                        highCount: $highCount
+                    );
+
+                    if (count($repeatNumbers) !== $repeatTarget) {
+                        continue;
+                    }
+
+                    foreach ($outsideRankings as $outsideStrategy => $outsideRanking) {
+                        $numbers = array_merge(
+                            $repeatNumbers,
+                            array_slice($outsideRanking, 0, $quantidadeDezenas - $repeatTarget)
+                        );
+
+                        $numbers = $this->normalizeNumbers($numbers);
+
+                        if (count($numbers) !== $quantidadeDezenas) {
+                            continue;
+                        }
+
+                        $candidates[] = $this->makeCurrentCandidate(
+                            strategy: 'repeat_survival_' . $repeatStrategy . '_' . $outsideStrategy . '_' . $repeatTarget . '_' . $highCount,
+                            numbers: $numbers,
+                            profiles: $currentProfiles,
+                            historicalContests: $historicalContests,
+                            quantidadeDezenas: $quantidadeDezenas,
+                            walkForwardMetrics: $walkForwardMetrics
+                        );
+                    }
+                }
+            }
+        }
+
+        return $candidates;
+    }
+
+    protected function addLearningSnapshotCandidates(
+        array $candidates,
+        array $currentProfiles,
+        array $historicalContests,
+        int $quantidadeDezenas,
+        LotofacilConcurso $concursoBase,
+        ?LottusLearningSnapshot $learningSnapshot
+    ): array {
+        if (
+            ! $learningSnapshot
+            || ! (bool) config('lottus_fechamento.learning_snapshots.enabled', true)
+            || ! $this->shouldGenerateLearningCandidates($learningSnapshot, $quantidadeDezenas)
+        ) {
+            return $candidates;
+        }
+
+        $numberBias = $this->numberBiasFromPairBias($learningSnapshot->pair_bias ?? []);
+
+        if (empty($numberBias)) {
+            return $candidates;
+        }
+
+        $rankedPairNumbers = array_keys($numberBias);
+
+        usort($rankedPairNumbers, function (int $a, int $b) use ($numberBias): int {
+            if (($numberBias[$a] ?? 0.0) === ($numberBias[$b] ?? 0.0)) {
+                return $a <=> $b;
+            }
+
+            return ($numberBias[$b] ?? 0.0) <=> ($numberBias[$a] ?? 0.0);
+        });
+
+        $lastDraw = $this->extractNumbers($concursoBase);
+        $learnedWeights = [
+            'frequency' => 0.12,
+            'delay' => 0.10,
+            'cycle' => 0.12,
+            'correlation' => 0.38,
+            'recent_presence' => 0.04,
+            'return_pressure' => 0.14,
+            'stability' => 0.10,
+            'pair_bias' => 0.20,
+        ];
+
+        $profilesWithBias = $currentProfiles;
+
+        foreach ($profilesWithBias as $number => &$profile) {
+            $profile['pair_bias'] = (float) ($numberBias[(int) $number] ?? 0.0);
+        }
+
+        unset($profile);
+
+        $forcedSets = [
+            'pair_core' => array_slice($rankedPairNumbers, 0, min(12, $quantidadeDezenas)),
+            'pair_repeat_core' => array_values(array_unique(array_merge(
+                array_slice(array_values(array_intersect($rankedPairNumbers, $lastDraw)), 0, 8),
+                array_slice($rankedPairNumbers, 0, 8)
+            ))),
+            'pair_wide_core' => array_slice($rankedPairNumbers, 0, min(15, $quantidadeDezenas)),
+        ];
+
+        foreach ($forcedSets as $strategy => $forcedNumbers) {
+            $base = $this->buildBaseFromProfiles(
+                profiles: $profilesWithBias,
+                quantidadeDezenas: $quantidadeDezenas,
+                weights: $this->normalizeGenericWeights($learnedWeights),
+                forcedNumbers: $forcedNumbers,
+                blockedNumbers: [],
+                salt: crc32('learning_snapshot|' . $strategy . '|' . $concursoBase->concurso)
+            );
+
+            if (count($base) !== $quantidadeDezenas) {
+                continue;
+            }
+
+            $candidate = $this->makeCurrentCandidate(
+                strategy: 'learning_snapshot_' . $strategy,
+                numbers: $base,
+                profiles: $profilesWithBias,
+                historicalContests: $historicalContests,
+                quantidadeDezenas: $quantidadeDezenas,
+                walkForwardMetrics: []
+            );
+
+            $candidate['fitness'] = round(((float) ($candidate['fitness'] ?? 0.0)) - 120.0, 8);
+            $candidates[] = $candidate;
+        }
+
+        return $candidates;
+    }
+
+    protected function barbellRepeatNumbers(
+        array $highRanking,
+        array $lowRanking,
+        int $repeatTarget,
+        int $highCount
+    ): array {
+        $numbers = [];
+
+        foreach (array_slice($highRanking, 0, $highCount) as $number) {
+            if (! in_array($number, $numbers, true)) {
+                $numbers[] = $number;
+            }
+        }
+
+        foreach ($lowRanking as $number) {
+            if (count($numbers) >= $repeatTarget) {
+                break;
+            }
+
+            if (! in_array($number, $numbers, true)) {
+                $numbers[] = $number;
+            }
+        }
+
+        return $this->normalizeNumbers(array_slice($numbers, 0, $repeatTarget));
+    }
+
+    protected function rankNumbersByProfile(
+        array $numbers,
+        array $profiles,
+        string $metric,
+        bool $ascending = false
+    ): array {
+        $numbers = $this->normalizeNumbers($numbers);
+
+        usort($numbers, function (int $a, int $b) use ($profiles, $metric, $ascending): int {
+            $aValue = (float) ($profiles[$a][$metric] ?? 0.0);
+            $bValue = (float) ($profiles[$b][$metric] ?? 0.0);
+
+            if ($aValue === $bValue) {
+                return $a <=> $b;
+            }
+
+            return $ascending ? ($aValue <=> $bValue) : ($bValue <=> $aValue);
+        });
+
+        return $numbers;
     }
 
     protected function buildCurrentNumberProfiles(
@@ -932,6 +1512,247 @@ class FechamentoBaseCompetitionService
             $selected = $this->normalizeNumbers($selected);
             $needed--;
         }
+    }
+
+    protected function attachSimulationMetricsToCandidates(
+        array $candidates,
+        array $historicalContests,
+        int $quantidadeDezenas
+    ): array {
+        foreach ($candidates as &$candidate) {
+            $simulation = $this->baseSimulationMetrics(
+                base: $candidate['numbers'] ?? [],
+                historicalContests: $historicalContests,
+                quantidadeDezenas: $quantidadeDezenas
+            );
+
+            $originalFitness = (float) ($candidate['fitness'] ?? 0.0);
+            $simulationScore = (float) ($simulation['score'] ?? 0.0);
+
+            $candidate['simulation'] = $simulation;
+            $candidate['simulation_score'] = round($simulationScore, 8);
+            $candidate['fitness'] = round(($simulationScore * 1.0) + ($originalFitness * 0.28), 8);
+        }
+
+        unset($candidate);
+
+        return $candidates;
+    }
+
+    protected function baseSimulationMetrics(
+        array $base,
+        array $historicalContests,
+        int $quantidadeDezenas
+    ): array {
+        $base = $this->normalizeNumbers($base);
+        $draws = array_slice(array_column($historicalContests, 'numbers'), -260);
+
+        if (empty($base) || count($base) !== $quantidadeDezenas || empty($draws)) {
+            return [
+                'score' => 0.0,
+                'samples' => 0,
+                'avg_hits' => 0.0,
+                'p90_hits' => 0.0,
+                'min_hits' => 0,
+                'max_hits' => 0,
+                'coverage_11' => 0.0,
+                'coverage_12' => 0.0,
+                'coverage_13' => 0.0,
+                'coverage_14' => 0.0,
+                'coverage_15' => 0.0,
+                'recent_peak_score' => 0.0,
+                'hit_distribution' => [],
+            ];
+        }
+
+        $total = 0;
+        $min = 15;
+        $max = 0;
+        $coverage11 = 0;
+        $coverage12 = 0;
+        $coverage13 = 0;
+        $coverage14 = 0;
+        $coverage15 = 0;
+        $recentPeakScore = 0.0;
+        $hitDistribution = [];
+        $sampleCount = 0;
+
+        foreach ($draws as $index => $draw) {
+            if (! is_array($draw) || count($draw) !== 15) {
+                continue;
+            }
+
+            $draw = $this->normalizeNumbers($draw);
+            $hits = count(array_intersect($base, $draw));
+            $recentWeight = $this->simulationRecentWeight($index, count($draws));
+
+            $sampleCount++;
+            $total += $hits;
+            $min = min($min, $hits);
+            $max = max($max, $hits);
+            $hitDistribution[] = $hits;
+
+            if ($hits >= 11) {
+                $coverage11++;
+            }
+
+            if ($hits >= 12) {
+                $coverage12++;
+            }
+
+            if ($hits >= 13) {
+                $coverage13++;
+            }
+
+            if ($hits >= 14) {
+                $coverage14++;
+            }
+
+            if ($hits >= 15) {
+                $coverage15++;
+            }
+
+            if ($hits >= 15) {
+                $recentPeakScore += 38.0 * $recentWeight;
+            } elseif ($hits >= 14) {
+                $recentPeakScore += 18.0 * $recentWeight;
+            } elseif ($hits >= 13) {
+                $recentPeakScore += 5.5 * $recentWeight;
+            } elseif ($hits >= 12) {
+                $recentPeakScore += 1.0 * $recentWeight;
+            } elseif ($hits <= 9) {
+                $recentPeakScore -= 0.9 * $recentWeight;
+            }
+        }
+
+        if ($sampleCount === 0) {
+            return [
+                'score' => 0.0,
+                'samples' => 0,
+                'avg_hits' => 0.0,
+                'p90_hits' => 0.0,
+                'min_hits' => 0,
+                'max_hits' => 0,
+                'coverage_11' => 0.0,
+                'coverage_12' => 0.0,
+                'coverage_13' => 0.0,
+                'coverage_14' => 0.0,
+                'coverage_15' => 0.0,
+                'recent_peak_score' => 0.0,
+                'hit_distribution' => [],
+            ];
+        }
+
+        sort($hitDistribution);
+
+        $p90Index = min(count($hitDistribution) - 1, max(0, (int) floor(count($hitDistribution) * 0.90)));
+        $p90Hits = (int) ($hitDistribution[$p90Index] ?? 0);
+        $avgHits = $total / $sampleCount;
+        $coverage11Rate = $coverage11 / $sampleCount;
+        $coverage12Rate = $coverage12 / $sampleCount;
+        $coverage13Rate = $coverage13 / $sampleCount;
+        $coverage14Rate = $coverage14 / $sampleCount;
+        $coverage15Rate = $coverage15 / $sampleCount;
+        $peakDensity = $this->simulationPeakDensity($hitDistribution);
+
+        $baseScore =
+            ($max * 95.0) +
+            ($p90Hits * 28.0) +
+            ($peakDensity * 180.0) +
+            ($coverage15Rate * 2400.0) +
+            ($coverage14Rate * 1250.0) +
+            ($coverage13Rate * 260.0) +
+            ($coverage12Rate * 24.0) +
+            ($coverage11Rate * 6.0) +
+            ($recentPeakScore * 24.0) +
+            ($avgHits * 1.4);
+
+        if ($coverage14Rate <= 0.0 && $max < 14) {
+            $baseScore -= 240.0;
+        }
+
+        $score = $baseScore;
+
+        if ($max >= 15) {
+            $score =
+                200000.0 +
+                ($coverage15Rate * 60000.0) +
+                ($coverage14Rate * 24000.0) +
+                ($coverage13Rate * 1800.0) +
+                ($recentPeakScore * 120.0) +
+                ($peakDensity * 900.0) +
+                ($baseScore * 0.12);
+        } elseif ($max >= 14) {
+            $score =
+                100000.0 +
+                ($coverage14Rate * 42000.0) +
+                ($coverage13Rate * 2200.0) +
+                ($recentPeakScore * 95.0) +
+                ($peakDensity * 720.0) +
+                ($baseScore * 0.14);
+        } elseif ($max >= 13) {
+            $score =
+                10000.0 +
+                ($coverage13Rate * 2500.0) +
+                ($recentPeakScore * 32.0) +
+                ($peakDensity * 260.0) +
+                ($baseScore * 0.25);
+        }
+
+        return [
+            'score' => round($score, 8),
+            'samples' => $sampleCount,
+            'avg_hits' => round($avgHits, 8),
+            'p90_hits' => $p90Hits,
+            'min_hits' => $min,
+            'max_hits' => $max,
+            'coverage_11' => round($coverage11Rate, 8),
+            'coverage_12' => round($coverage12Rate, 8),
+            'coverage_13' => round($coverage13Rate, 8),
+            'coverage_14' => round($coverage14Rate, 8),
+            'coverage_15' => round($coverage15Rate, 8),
+            'recent_peak_score' => round($recentPeakScore, 8),
+            'peak_density' => round($peakDensity, 8),
+            'hit_distribution' => $hitDistribution,
+        ];
+    }
+
+    protected function simulationRecentWeight(int $index, int $total): float
+    {
+        if ($total <= 1) {
+            return 1.0;
+        }
+
+        $position = $index / max(1, $total - 1);
+
+        return 0.35 + ($position * 1.65);
+    }
+
+    protected function simulationPeakDensity(array $hitDistribution): float
+    {
+        if (empty($hitDistribution)) {
+            return 0.0;
+        }
+
+        $score = 0.0;
+
+        foreach ($hitDistribution as $hits) {
+            $hits = (int) $hits;
+
+            if ($hits >= 15) {
+                $score += 18.0;
+            } elseif ($hits >= 14) {
+                $score += 8.0;
+            } elseif ($hits >= 13) {
+                $score += 2.2;
+            } elseif ($hits >= 12) {
+                $score += 0.35;
+            } elseif ($hits <= 9) {
+                $score -= 0.25;
+            }
+        }
+
+        return $score / max(1, count($hitDistribution));
     }
 
     protected function baseHistoricalRobustness(array $base, array $historicalContests): array
@@ -1552,6 +2373,14 @@ class FechamentoBaseCompetitionService
 
     protected function extractNumbers($concurso): array
     {
+        if (is_array($concurso)) {
+            foreach (['numbers', 'dezenas'] as $key) {
+                if (! empty($concurso[$key]) && is_array($concurso[$key])) {
+                    return $this->normalizeNumbers($concurso[$key]);
+                }
+            }
+        }
+
         $numbers = [];
 
         for ($i = 1; $i <= 15; $i++) {

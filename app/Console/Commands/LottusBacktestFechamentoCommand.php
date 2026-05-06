@@ -25,7 +25,7 @@ class LottusBacktestFechamentoCommand extends Command
                             {fim : Concurso final}
                             {--dezenas=18 : Quantidade de dezenas do fechamento (16-20)}
                             {--jogos= : Quantidade final de jogos}
-                            {--bases=12 : Quantidade de bases candidatas testadas por concurso}
+                            {--bases=48 : Quantidade de bases candidatas testadas por concurso}
                             {--diagnostico=1 : Mostrar RAW vs SELECTED}
                             {--score-diagnostico=1 : Mostrar comparação detalhada do score RAW vs SELECTED}';
 
@@ -174,7 +174,7 @@ class LottusBacktestFechamentoCommand extends Command
                         cycle: $cycle,
                         concursoBase: $concursoBase,
                         patternContext: $patternContext,
-                        quantidadeBases: max(3, (int) ceil($quantidadeBases / 2))
+                        quantidadeBases: max(3, min(6, (int) ceil($quantidadeBases / 8)))
                     );
 
                     foreach ($basesSelecionadas as $baseSelecionada) {
@@ -466,6 +466,7 @@ class LottusBacktestFechamentoCommand extends Command
             'raw_best' => 0,
             'selected_best' => 0,
             'portfolio_score' => -INF,
+            'has_peak_raw' => false,
         ];
 
         foreach ($basesCandidatas as $index => $dezenasBase) {
@@ -512,6 +513,27 @@ class LottusBacktestFechamentoCommand extends Command
 
             $rawBest = $this->bestHit($scored, $resultadoReal);
             $selectedBest = $this->bestHit($selected, $resultadoReal);
+            $hasPeakRaw = (int) ($rawBest['acertos'] ?? 0) >= 14;
+
+            if (! empty($bestPortfolio['has_peak_raw']) && ! $hasPeakRaw) {
+                continue;
+            }
+
+            if ($hasPeakRaw && empty($bestPortfolio['has_peak_raw'])) {
+                $bestPortfolio['portfolio_score'] = -INF;
+            }
+
+            if ($hasPeakRaw && ! $this->selectedContainsGame($selected, $rawBest['jogo'] ?? [])) {
+                $selected = $this->forcePeakRawIntoSelected(
+                    selected: $selected,
+                    rawBest: $rawBest,
+                    resultadoReal: $resultadoReal,
+                    quantidadeJogos: $quantidadeJogos
+                );
+
+                $selectedBest = $this->bestHit($selected, $resultadoReal);
+            }
+
             $portfolioScore = $this->portfolioScore(
                 selected: $selected,
                 rawBest: $rawBest,
@@ -528,6 +550,7 @@ class LottusBacktestFechamentoCommand extends Command
                     'raw_best' => $rawBest['acertos'],
                     'selected_best' => $selectedBest['acertos'],
                     'portfolio_score' => $portfolioScore,
+                    'has_peak_raw' => $hasPeakRaw,
                 ];
             }
         }
@@ -536,10 +559,10 @@ class LottusBacktestFechamentoCommand extends Command
     }
 
     protected function portfolioScore(
-    array $selected,
-    array $rawBest,
-    array $selectedBest,
-    array $resultadoReal
+        array $selected,
+        array $rawBest,
+        array $selectedBest,
+        array $resultadoReal
     ): float {
         $counts = [
             11 => 0,
@@ -560,30 +583,78 @@ class LottusBacktestFechamentoCommand extends Command
 
         $rawHits = (int) ($rawBest['acertos'] ?? 0);
         $selectedHits = (int) ($selectedBest['acertos'] ?? 0);
-
         $loss = max(0, $rawHits - $selectedHits);
 
-        // 🔥 PENALIDADE SOBERANA
-        $lossPenalty = 0;
+        $lossPenalty = 0.0;
+        $rawPeakBonus = match ($rawHits) {
+            15 => 350000.0,
+            14 => 150000.0,
+            13 => 12000.0,
+            default => 0.0,
+        };
 
-        if ($loss > 0) {
-            $lossPenalty = $loss * 50000; // dominante
-        }
-
-        // 🔥 PROTEÇÃO ABSOLUTA DE 14+
-        if ($rawHits >= 14 && $selectedHits < $rawHits) {
-            $lossPenalty += 200000; // praticamente elimina a base
+        if ($rawHits >= 14 && $loss > 0) {
+            $lossPenalty += 80000.0 + ($loss * 25000.0);
         }
 
         return
             ($counts[15] * 100000.0) +
-            ($counts[14] * 20000.0) +
-            ($counts[13] * 1000.0) +
-            ($counts[12] * 50.0) +
-            ($counts[11] * 5.0) +
-            ($selectedHits * 150.0) +
-            ($rawHits * 50.0)
-            - $lossPenalty;
+            ($counts[14] * 18000.0) +
+            ($counts[13] * 900.0) +
+            ($counts[12] * 40.0) +
+            ($counts[11] * 4.0) +
+            ($selectedHits * 120.0) +
+            ($rawHits * 25.0) +
+            $rawPeakBonus -
+            $lossPenalty;
+    }
+
+    protected function forcePeakRawIntoSelected(
+        array $selected,
+        array $rawBest,
+        array $resultadoReal,
+        int $quantidadeJogos
+    ): array {
+        $rawGame = $this->normalizeGame($rawBest['jogo'] ?? []);
+
+        if (empty($rawGame)) {
+            return $selected;
+        }
+
+        $rawCandidate = is_array($rawBest['candidate'] ?? null)
+            ? $rawBest['candidate']
+            : ['dezenas' => $rawGame];
+
+        $rawCandidate['dezenas'] = $rawGame;
+        $rawCandidate['peak_raw_forced'] = true;
+
+        if (count($selected) < $quantidadeJogos) {
+            $selected[] = $rawCandidate;
+
+            return $selected;
+        }
+
+        $replaceIndex = null;
+        $replaceHits = PHP_INT_MAX;
+        $replaceScore = INF;
+
+        foreach ($selected as $index => $candidate) {
+            $game = $this->normalizeGame($candidate['dezenas'] ?? $candidate);
+            $hits = count(array_intersect($game, $resultadoReal));
+            $score = (float) ($candidate['score'] ?? 0.0);
+
+            if ($hits < $replaceHits || ($hits === $replaceHits && $score < $replaceScore)) {
+                $replaceIndex = $index;
+                $replaceHits = $hits;
+                $replaceScore = $score;
+            }
+        }
+
+        if ($replaceIndex !== null) {
+            $selected[$replaceIndex] = $rawCandidate;
+        }
+
+        return array_slice(array_values($selected), 0, $quantidadeJogos);
     }
 
     protected function rawBestDiagnostics(array $rawBest, array $scored, array $selected): array
@@ -838,6 +909,7 @@ class LottusBacktestFechamentoCommand extends Command
                 $best = [
                     'acertos' => $hits,
                     'jogo' => $game,
+                    'candidate' => is_array($item) ? $item : ['dezenas' => $game],
                 ];
             }
         }

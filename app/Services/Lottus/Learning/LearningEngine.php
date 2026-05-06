@@ -13,11 +13,33 @@ class LearningEngine
 
     public function learnFromContest(
         LotofacilConcurso $concurso
-    ): void {
+    ): array {
+        $summary = [
+            'processed' => 0,
+            'failed' => 0,
+            'strategies' => [],
+        ];
+
         foreach ($this->registry->strategies() as $strategy) {
             try {
-                $strategy->learn($concurso);
+                $result = $strategy->learn($concurso);
+
+                $summary['processed']++;
+                $summary['strategies'][] = [
+                    'engine' => $strategy->engine(),
+                    'strategy' => $strategy->strategy(),
+                    'status' => 'completed',
+                    'result' => $result,
+                ];
             } catch (\Throwable $e) {
+                $summary['failed']++;
+                $summary['strategies'][] = [
+                    'engine' => $strategy->engine(),
+                    'strategy' => $strategy->strategy(),
+                    'status' => 'failed',
+                    'error' => $e->getMessage(),
+                ];
+
                 logger()->error('LOTTUS_LEARNING_STRATEGY_FAILED', [
                     'engine' => $strategy->engine(),
                     'strategy' => $strategy->strategy(),
@@ -26,5 +48,7 @@ class LearningEngine
                 ]);
             }
         }
+
+        return $summary;
     }
 }

@@ -44,33 +44,45 @@ class SimpleReinforcementLearningDriver implements LearningStrategyInterface
 
     public function learn(
         LotofacilConcurso $concursoAtual
-    ): void {
+    ): array {
+        $summary = [
+            'quantities_processed' => 0,
+            'learning_logs_created' => 0,
+            'weight_updates' => 0,
+        ];
+
         $concursoAnterior = LotofacilConcurso::query()
             ->where('concurso', '<', $concursoAtual->concurso)
             ->orderByDesc('concurso')
             ->first();
 
         if (! $concursoAnterior) {
-            return;
+            return $summary + ['skipped_reason' => 'previous_contest_not_found'];
         }
 
         $historico = $this->historicalDataService->getUntilContest($concursoAnterior->concurso);
 
         if ($historico->count() < 160) {
-            return;
+            return $summary + ['skipped_reason' => 'insufficient_history'];
         }
 
         $resultadoNumbers = $this->extractNumbers($concursoAtual);
 
         foreach ([16, 17, 18, 19, 20] as $quantidadeDezenas) {
-            $this->learnForQuantity(
+            $quantitySummary = $this->learnForQuantity(
                 quantidadeDezenas: $quantidadeDezenas,
                 concursoBase: $concursoAnterior,
                 concursoAtual: $concursoAtual,
                 historico: $historico,
                 resultadoNumbers: $resultadoNumbers
             );
+
+            $summary['quantities_processed'] += (int) ($quantitySummary['processed'] ?? 0);
+            $summary['learning_logs_created'] += (int) ($quantitySummary['logs_created'] ?? 0);
+            $summary['weight_updates'] += (int) ($quantitySummary['weight_updated'] ?? 0);
         }
+
+        return $summary;
     }
 
     protected function learnForQuantity(
@@ -79,7 +91,13 @@ class SimpleReinforcementLearningDriver implements LearningStrategyInterface
         LotofacilConcurso $concursoAtual,
         $historico,
         array $resultadoNumbers
-    ): void {
+    ): array {
+        $summary = [
+            'processed' => 0,
+            'logs_created' => 0,
+            'weight_updated' => 0,
+        ];
+
         $frequencyContext = $this->frequencyAnalysisService->analyze($historico);
         $delayContext = $this->delayAnalysisService->analyze($historico);
         $correlationContext = $this->correlationAnalysisService->analyze($historico);
@@ -107,7 +125,7 @@ class SimpleReinforcementLearningDriver implements LearningStrategyInterface
         );
 
         if (count($primaryBase) !== $quantidadeDezenas) {
-            return;
+            return $summary + ['skipped_reason' => 'invalid_primary_base'];
         }
 
         $candidateBases = $this->baseCompetitionService->selectTopBases(
@@ -125,7 +143,7 @@ class SimpleReinforcementLearningDriver implements LearningStrategyInterface
         );
 
         if (empty($candidateBases)) {
-            return;
+            return $summary + ['skipped_reason' => 'empty_candidate_bases'];
         }
 
         $performanceByWindow = [
@@ -182,6 +200,8 @@ class SimpleReinforcementLearningDriver implements LearningStrategyInterface
                 ],
                 'processed_at' => now(),
             ]);
+
+            $summary['logs_created']++;
         }
 
         $performanceByWindow = $this->normalizeWeights($performanceByWindow);
@@ -204,6 +224,11 @@ class SimpleReinforcementLearningDriver implements LearningStrategyInterface
             error: $bestError,
             score: $bestScore
         );
+
+        $summary['processed'] = 1;
+        $summary['weight_updated'] = 1;
+
+        return $summary;
     }
 
     protected function estimateWindowContribution(
@@ -258,8 +283,16 @@ class SimpleReinforcementLearningDriver implements LearningStrategyInterface
         return $scores;
     }
 
-    protected function extractNumbers(LotofacilConcurso $concurso): array
+    protected function extractNumbers($concurso): array
     {
+        if (is_array($concurso)) {
+            foreach (['dezenas', 'numbers'] as $key) {
+                if (! empty($concurso[$key]) && is_array($concurso[$key])) {
+                    return $this->normalizeNumbers($concurso[$key]);
+                }
+            }
+        }
+
         $numbers = [];
 
         for ($i = 1; $i <= 15; $i++) {
