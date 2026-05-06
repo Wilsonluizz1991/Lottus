@@ -73,6 +73,35 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Geração comercial
+    |--------------------------------------------------------------------------
+    |
+    | O fechamento de 20 dezenas entrega 90 jogos e é o caminho mais caro do
+    | produto. Estes limites controlam apenas o fluxo real de venda, mantendo
+    | a competição estatística e evitando que a requisição web ultrapasse o
+    | timeout do nginx/PHP-FPM.
+    |
+    */
+
+    'commercial_generation' => [
+        'primary_base_limit' => [
+            'default' => 12,
+            20 => 8,
+        ],
+        'top_bases_per_primary' => [
+            'default' => 3,
+            20 => 2,
+        ],
+        'max_competitor_bases' => [
+            'default' => 12,
+            20 => 8,
+        ],
+    ],
+
+    'competition_log_full' => false,
+
+    /*
+    |--------------------------------------------------------------------------
     | Pesos para seleção das dezenas fortes
     |--------------------------------------------------------------------------
     */

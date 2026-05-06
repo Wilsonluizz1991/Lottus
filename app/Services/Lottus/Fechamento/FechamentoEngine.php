@@ -93,7 +93,7 @@ class FechamentoEngine
                 structureContext: $structureContext,
                 cycleContext: $cycleContext,
                 concursoBase: $concursoBase,
-                limit: 12
+                limit: $this->commercialGenerationLimit('primary_base_limit', $quantidadeDezenas, 12)
             );
 
             if (empty($basesPrimarias)) {
@@ -120,7 +120,7 @@ class FechamentoEngine
                     cycleContext: $cycleContext,
                     concursoBase: $concursoBase,
                     patternContext: $patternContext,
-                    limit: 3
+                    limit: $this->commercialGenerationLimit('top_bases_per_primary', $quantidadeDezenas, 3)
                 );
 
                 foreach ($basesSelecionadas as $baseSelecionada) {
@@ -133,7 +133,11 @@ class FechamentoEngine
             }
 
             $basesCompetidoras = $this->uniqueBaseList($basesCompetidoras);
-            $basesCompetidoras = array_slice($basesCompetidoras, 0, 12);
+            $basesCompetidoras = array_slice(
+                $basesCompetidoras,
+                0,
+                $this->commercialGenerationLimit('max_competitor_bases', $quantidadeDezenas, 12)
+            );
 
             if (empty($basesCompetidoras)) {
                 throw new \Exception('Falha ao selecionar bases competidoras do fechamento.');
@@ -437,6 +441,17 @@ class FechamentoEngine
             20 => max(20, (int) config('lottus_fechamento.commercial_regeneration_attempts.20', 20)),
             default => max(24, (int) config('lottus_fechamento.commercial_regeneration_attempts.default', 24)),
         };
+    }
+
+    protected function commercialGenerationLimit(string $key, int $quantidadeDezenas, int $default): int
+    {
+        $configured = config("lottus_fechamento.commercial_generation.{$key}.{$quantidadeDezenas}");
+
+        if ($configured === null) {
+            $configured = config("lottus_fechamento.commercial_generation.{$key}.default", $default);
+        }
+
+        return max(1, (int) $configured);
     }
 
     protected function resolveRegeneratedCommercialBase(

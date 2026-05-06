@@ -11,6 +11,8 @@ class FechamentoBaseCompetitionService
 {
     protected array $lastNumberScores = [];
     protected array $lastCompetitionReport = [];
+    protected array $competitionContextCache = [];
+    protected array $baseSimulationMetricsCache = [];
 
     public function __construct(
         protected FechamentoAffinityClusterService $affinityClusterService,
@@ -71,35 +73,27 @@ class FechamentoBaseCompetitionService
             return [$primaryBase];
         }
 
-        $historicalContests = $this->extractHistoricalContests($historico, $concursoBase);
+        $context = $this->competitionContext(
+            historico: $historico,
+            frequencyContext: $frequencyContext,
+            delayContext: $delayContext,
+            correlationContext: $correlationContext,
+            cycleContext: $cycleContext,
+            concursoBase: $concursoBase,
+            quantidadeDezenas: $quantidadeDezenas
+        );
+
+        $historicalContests = $context['historical_contests'];
 
         if (count($historicalContests) < 180) {
             return [$primaryBase];
         }
 
-        $currentProfiles = $this->buildCurrentNumberProfiles(
-            frequencyContext: $frequencyContext,
-            delayContext: $delayContext,
-            correlationContext: $correlationContext,
-            cycleContext: $cycleContext,
-            concursoBase: $concursoBase
-        );
-
-        $learningSnapshot = $this->activeLearningSnapshot($concursoBase);
-        $currentProfiles = $this->applyLearningSnapshotToProfiles($currentProfiles, $learningSnapshot, $quantidadeDezenas);
-
+        $currentProfiles = $context['current_profiles'];
+        $learningSnapshot = $context['learning_snapshot'];
         $this->lastNumberScores = $currentProfiles;
-
-        $strategyDefinitions = $this->applyLearningSnapshotToStrategyDefinitions(
-            strategyDefinitions: $this->strategyDefinitions(),
-            learningSnapshot: $learningSnapshot,
-            quantidadeDezenas: $quantidadeDezenas
-        );
-        $walkForwardReport = $this->runWalkForwardTournament(
-            historicalContests: $historicalContests,
-            quantidadeDezenas: $quantidadeDezenas,
-            strategyDefinitions: $strategyDefinitions
-        );
+        $strategyDefinitions = $context['strategy_definitions'];
+        $walkForwardReport = $context['walk_forward_report'];
 
         $candidates = [];
 
@@ -257,7 +251,10 @@ class FechamentoBaseCompetitionService
             'learning_snapshot_promoted_strategy' => $learningSnapshot?->promoted_strategy,
         ];
 
-        logger()->info('FECHAMENTO_BASE_COMPETITION_LEARNING_DECISION', $this->lastCompetitionReport);
+        logger()->info(
+            'FECHAMENTO_BASE_COMPETITION_LEARNING_DECISION',
+            $this->competitionLogPayload($this->lastCompetitionReport)
+        );
 
         return array_map(
             fn (array $candidate): array => $candidate['numbers'],
@@ -343,6 +340,116 @@ class FechamentoBaseCompetitionService
     public function getLastCompetitionReport(): array
     {
         return $this->lastCompetitionReport;
+    }
+
+    protected function competitionContext(
+        Collection $historico,
+        array $frequencyContext,
+        array $delayContext,
+        array $correlationContext,
+        array $cycleContext,
+        LotofacilConcurso $concursoBase,
+        int $quantidadeDezenas
+    ): array {
+        $cacheKey = $this->competitionContextCacheKey($historico, $concursoBase, $quantidadeDezenas);
+
+        if (isset($this->competitionContextCache[$cacheKey])) {
+            return $this->competitionContextCache[$cacheKey];
+        }
+
+        $historicalContests = $this->extractHistoricalContests($historico, $concursoBase);
+
+        if (count($historicalContests) < 180) {
+            return $this->competitionContextCache[$cacheKey] = [
+                'historical_contests' => $historicalContests,
+                'current_profiles' => [],
+                'learning_snapshot' => null,
+                'strategy_definitions' => $this->strategyDefinitions(),
+                'walk_forward_report' => ['strategies' => []],
+            ];
+        }
+
+        $currentProfiles = $this->buildCurrentNumberProfiles(
+            frequencyContext: $frequencyContext,
+            delayContext: $delayContext,
+            correlationContext: $correlationContext,
+            cycleContext: $cycleContext,
+            concursoBase: $concursoBase
+        );
+
+        $learningSnapshot = $this->activeLearningSnapshot($concursoBase);
+        $currentProfiles = $this->applyLearningSnapshotToProfiles($currentProfiles, $learningSnapshot, $quantidadeDezenas);
+
+        $strategyDefinitions = $this->applyLearningSnapshotToStrategyDefinitions(
+            strategyDefinitions: $this->strategyDefinitions(),
+            learningSnapshot: $learningSnapshot,
+            quantidadeDezenas: $quantidadeDezenas
+        );
+
+        return $this->competitionContextCache[$cacheKey] = [
+            'historical_contests' => $historicalContests,
+            'current_profiles' => $currentProfiles,
+            'learning_snapshot' => $learningSnapshot,
+            'strategy_definitions' => $strategyDefinitions,
+            'walk_forward_report' => $this->runWalkForwardTournament(
+                historicalContests: $historicalContests,
+                quantidadeDezenas: $quantidadeDezenas,
+                strategyDefinitions: $strategyDefinitions
+            ),
+        ];
+    }
+
+    protected function competitionContextCacheKey(
+        Collection $historico,
+        LotofacilConcurso $concursoBase,
+        int $quantidadeDezenas
+    ): string {
+        return implode('|', [
+            'ctx',
+            $quantidadeDezenas,
+            (int) $concursoBase->concurso,
+            $historico->count(),
+            (int) config('lottus_fechamento.learning_snapshots.enabled', true),
+            (int) config('lottus_fechamento.learning_snapshots.use_promoted', true),
+            (string) config('lottus_fechamento.learning_snapshots.validation_snapshot_id', ''),
+        ]);
+    }
+
+    protected function competitionLogPayload(array $report): array
+    {
+        if ((bool) config('lottus_fechamento.competition_log_full', false)) {
+            return $report;
+        }
+
+        $winner = $report['winner'] ?? [];
+        $candidates = array_slice($report['candidates'] ?? [], 0, 5);
+
+        return [
+            'concurso' => $report['concurso'] ?? null,
+            'quantidade_dezenas' => $report['quantidade_dezenas'] ?? null,
+            'winner' => [
+                'strategy' => $winner['strategy'] ?? null,
+                'key' => $winner['key'] ?? null,
+                'fitness' => $winner['fitness'] ?? null,
+                'max_hits' => $winner['simulation']['max_hits'] ?? null,
+                'coverage_14' => $winner['simulation']['coverage_14'] ?? null,
+            ],
+            'candidate_count' => count($report['candidates'] ?? []),
+            'top_candidates' => array_map(
+                fn (array $candidate): array => [
+                    'strategy' => $candidate['strategy'] ?? null,
+                    'key' => $candidate['key'] ?? null,
+                    'fitness' => $candidate['fitness'] ?? null,
+                    'max_hits' => $candidate['simulation']['max_hits'] ?? null,
+                ],
+                $candidates
+            ),
+            'peak_filter_applied' => $report['peak_filter_applied'] ?? false,
+            'peak_candidates_count' => $report['peak_candidates_count'] ?? 0,
+            'learning_snapshot_id' => $report['learning_snapshot_id'] ?? null,
+            'learning_snapshot_version' => $report['learning_snapshot_version'] ?? null,
+            'learning_snapshot_validation_status' => $report['learning_snapshot_validation_status'] ?? null,
+        ];
     }
 
     protected function activeLearningSnapshot(LotofacilConcurso $concursoBase): ?LottusLearningSnapshot
@@ -1546,6 +1653,17 @@ class FechamentoBaseCompetitionService
     ): array {
         $base = $this->normalizeNumbers($base);
         $draws = array_slice(array_column($historicalContests, 'numbers'), -260);
+        $cacheKey = implode('|', [
+            'simulation',
+            $quantidadeDezenas,
+            count($historicalContests),
+            (int) ($historicalContests[array_key_last($historicalContests)]['concurso'] ?? 0),
+            $this->key($base),
+        ]);
+
+        if (isset($this->baseSimulationMetricsCache[$cacheKey])) {
+            return $this->baseSimulationMetricsCache[$cacheKey];
+        }
 
         if (empty($base) || count($base) !== $quantidadeDezenas || empty($draws)) {
             return [
@@ -1699,7 +1817,7 @@ class FechamentoBaseCompetitionService
                 ($baseScore * 0.25);
         }
 
-        return [
+        return $this->baseSimulationMetricsCache[$cacheKey] = [
             'score' => round($score, 8),
             'samples' => $sampleCount,
             'avg_hits' => round($avgHits, 8),
