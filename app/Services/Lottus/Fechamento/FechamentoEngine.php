@@ -307,6 +307,12 @@ class FechamentoEngine
                 continue;
             }
 
+            $combinations = $this->limitCommercialCombinations(
+                combinations: $combinations,
+                quantidadeDezenas: $quantidadeDezenas,
+                quantidadeJogos: $quantidadeJogos
+            );
+
             $scoredCombinations = $this->scoreService->score(
                 $combinations,
                 $frequencyContext,
@@ -467,6 +473,26 @@ class FechamentoEngine
             "lottus_fechamento.commercial_generation.skip_base_competition.{$quantidadeDezenas}",
             (bool) config('lottus_fechamento.commercial_generation.skip_base_competition.default', false)
         );
+    }
+
+    protected function limitCommercialCombinations(
+        array $combinations,
+        int $quantidadeDezenas,
+        int $quantidadeJogos
+    ): array {
+        $configured = config("lottus_fechamento.commercial_generation.max_scored_combinations.{$quantidadeDezenas}");
+
+        if ($configured === null) {
+            $configured = config('lottus_fechamento.commercial_generation.max_scored_combinations.default');
+        }
+
+        if ($configured === null) {
+            return $combinations;
+        }
+
+        $limit = max($quantidadeJogos, (int) $configured);
+
+        return array_slice($combinations, 0, min(count($combinations), $limit));
     }
 
     protected function resolveRegeneratedCommercialBase(

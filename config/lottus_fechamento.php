@@ -86,7 +86,7 @@ return [
     'commercial_generation' => [
         'primary_base_limit' => [
             'default' => 12,
-            20 => 4,
+            20 => 1,
         ],
         'top_bases_per_primary' => [
             'default' => 3,
@@ -94,11 +94,15 @@ return [
         ],
         'max_competitor_bases' => [
             'default' => 12,
-            20 => 4,
+            20 => 1,
         ],
         'skip_base_competition' => [
             'default' => false,
             20 => true,
+        ],
+        'max_scored_combinations' => [
+            'default' => null,
+            20 => 1200,
         ],
     ],
 
