@@ -28,9 +28,11 @@ class GeneratedBetPersistenceService
                 'atrasadas' => $game['atrasadas'] ?? 0,
                 'analise' => array_merge($game['analise'] ?? [], [
                     'token_lote' => $tokenLote,
-                    'engine_version' => 'v2',
+                    'engine_version' => 'v3-main-elite-adaptive',
                     'ranking' => $ranking + 1,
                     'concurso_base' => $concursoBase->concurso,
+                    'main_learning_snapshot' => $game['main_learning']['_snapshot'] ?? null,
+                    'selection_phase' => $game['selection_phase'] ?? null,
                 ]),
             ]);
         }

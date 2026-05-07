@@ -11,7 +11,8 @@ class LottusBacktestCommand extends Command
                             {inicio : Concurso inicial}
                             {fim : Concurso final}
                             {--jogos=1 : Quantidade de jogos por concurso}
-                            {--seed= : Seed opcional para backtests reproduziveis}';
+                            {--seed= : Seed opcional para backtests reproduziveis}
+                            {--random : Executa com RNG solto, apenas para teste de estresse}';
 
     protected $description = 'Executa backtest do motor estatístico da Lottus em um intervalo de concursos.';
 
@@ -21,16 +22,25 @@ class LottusBacktestCommand extends Command
         $fim = (int) $this->argument('fim');
         $jogos = (int) $this->option('jogos');
         $seedOption = $this->option('seed');
+        $random = (bool) $this->option('random');
         $seed = $seedOption !== null && $seedOption !== '' ? (int) $seedOption : null;
+        $useProductionEntropy = ! $random;
+        $seedLabel = 'aleatoria';
+
+        if ($seed === null && $useProductionEntropy && (bool) config('lottus.production_entropy.enabled', true)) {
+            $seedLabel = config('lottus.production_entropy.base_seed', 20260506) . ' (producao)';
+        } elseif ($seed !== null) {
+            $seedLabel = (string) $seed;
+        }
 
         $this->info('Iniciando backtest...');
         $this->line("Intervalo: {$inicio} até {$fim}");
         $this->line("Jogos por concurso: {$jogos}");
-        $this->line('Seed: ' . ($seed ?? 'aleatoria'));
+        $this->line('Seed: ' . $seedLabel);
         $this->newLine();
 
         try {
-            $resultado = $backtestService->run($inicio, $fim, $jogos, null, $seed);
+            $resultado = $backtestService->run($inicio, $fim, $jogos, null, $seed, $useProductionEntropy);
 
             $this->info('Backtest concluído com sucesso.');
             $this->newLine();
@@ -55,6 +65,8 @@ class LottusBacktestCommand extends Command
                     ['RAW 14/15 loss', $resultado['raw_14_15_loss'] ?? 0],
                     ['RAW near-15 candidatos', $resultado['near_15_raw_candidates'] ?? 0],
                     ['RAW 15 candidatos', $resultado['raw_15_candidates'] ?? 0],
+                    ['Concursos SELECTED 14+', $resultado['selected_14_plus_contests'] ?? 0],
+                    ['Concursos SELECTED 15', $resultado['selected_15_contests'] ?? 0],
                     ['Taxa 11 (%)', $resultado['taxas'][11]],
                     ['Taxa 12 (%)', $resultado['taxas'][12]],
                     ['Taxa 13 (%)', $resultado['taxas'][13]],
@@ -83,9 +95,9 @@ class LottusBacktestCommand extends Command
                 }
 
                 usort($linhasEstrategia, function (array $a, array $b): int {
-                    return (($b['RAW 15'] * 1000000) + ($b['RAW 14'] * 10000) + ($b['RAW 13'] * 100) + $b['Best'])
+                    return (($b['RAW 15'] * 1000000) + ($b['RAW 14'] * 10000) + $b['Best'])
                         <=>
-                        (($a['RAW 15'] * 1000000) + ($a['RAW 14'] * 10000) + ($a['RAW 13'] * 100) + $a['Best']);
+                        (($a['RAW 15'] * 1000000) + ($a['RAW 14'] * 10000) + $a['Best']);
                 });
 
                 $this->table(
@@ -119,8 +131,12 @@ class LottusBacktestCommand extends Command
                             'SEL Strategy' => $item['selected_strategy'] ?? '-',
                             'RAW Rank' => $item['raw_rank'] ?? '-',
                             'RAW Score' => $item['raw_score'] ?? '-',
+                            'RAW Elite' => $item['raw_elite_potential_score'] ?? '-',
+                            'RAW Near15' => $item['raw_near_15_score'] ?? '-',
                             'RAW HistMax' => $item['raw_historical_max_hits'] ?? '-',
                             'RAW Hist14+' => $item['raw_historical_14_plus'] ?? '-',
+                            'SEL Ranks' => implode(', ', $item['selected_ranks'] ?? []),
+                            'SEL Phases' => implode(', ', array_filter($item['selected_phases'] ?? [])),
                             'RAW Faltantes' => implode(', ', $item['raw_missing_numbers'] ?? []),
                             'RAW jogo' => implode(', ', $item['raw_jogo'] ?? []),
                             'SELECTED jogo' => implode(', ', $item['selected_jogo'] ?? []),
@@ -133,7 +149,7 @@ class LottusBacktestCommand extends Command
                     $this->line('Nenhum concurso com RAW >= 14 ou LOSS > 0 neste intervalo.');
                 } else {
                     $this->table(
-                        ['Concurso', 'RAW', 'SELECTED', 'LOSS', 'RAW no SELECTED?', 'RAW Strategy', 'SEL Strategy', 'RAW Rank', 'RAW Score', 'RAW HistMax', 'RAW Hist14+', 'RAW Faltantes', 'RAW jogo', 'SELECTED jogo', 'Resultado'],
+                        ['Concurso', 'RAW', 'SELECTED', 'LOSS', 'RAW no SELECTED?', 'RAW Strategy', 'SEL Strategy', 'RAW Rank', 'RAW Score', 'RAW Elite', 'RAW Near15', 'RAW HistMax', 'RAW Hist14+', 'SEL Ranks', 'SEL Phases', 'RAW Faltantes', 'RAW jogo', 'SELECTED jogo', 'Resultado'],
                         $linhasDiagnostico
                     );
                 }

@@ -36,13 +36,34 @@ return [
     */
 
     'generator' => [
-        'attempts' => 14000,
-        'target_candidates' => 1200,
+        'attempts' => 26000,
+        'target_candidates' => 2200,
         'elite' => [
             'enabled' => true,
-            'attempts' => 14000,
-            'target_candidates' => 1100,
+            'attempts' => 18000,
+            'target_candidates' => 1800,
+            'deterministic' => [
+                'enabled' => true,
+                'limit' => 900,
+            ],
         ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Production Entropy
+    |--------------------------------------------------------------------------
+    |
+    | O motor principal nao deve depender de RNG solto em producao. A entropia
+    | controlada torna a geracao auditavel e reproduzivel no backtest.
+    |
+    */
+
+    'production_entropy' => [
+        'enabled' => true,
+        'base_seed' => 20260506,
+        'package_profile' => 10,
+        'email_variation' => false,
     ],
 
     /*

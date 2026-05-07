@@ -21,5 +21,9 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withCommands([
         \App\Console\Commands\LottusBacktestFechamentoCommand::class,
         \App\Console\Commands\Lottus\AprenderFechamentoCommand::class,
+        \App\Console\Commands\LottusMainLearningReprocessCommand::class,
+        \App\Console\Commands\LottusMainLearningReportCommand::class,
+        \App\Console\Commands\LottusMainLearningTrainCommand::class,
+        \App\Console\Commands\LottusMainLearningStatusCommand::class,
     ])
     ->create();

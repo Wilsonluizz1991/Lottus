@@ -66,16 +66,18 @@ class CandidateGeneratorService
         $cycle = (float) ($weights['cycle'] ?? config('lottus.weights.cycle', 0.25));
 
         if ($cycle >= 0.28 || $delay >= 0.28 || $correlation >= 0.28) {
+            $aggressiveness = (float) ($weights['main_learning']['aggressiveness']['exploration'] ?? 1.0);
+
             return [
                 'name' => 'aggressive',
-                'repeat_min' => 7,
-                'repeat_max' => 12,
+                'repeat_min' => $aggressiveness >= 1.08 ? 6 : 7,
+                'repeat_max' => $aggressiveness >= 1.08 ? 13 : 12,
                 'cycle_min_hits' => 1,
-                'sum_tolerance' => 26,
+                'sum_tolerance' => $aggressiveness >= 1.08 ? 34 : 26,
                 'odd_tolerance' => 3,
                 'top_band_initial' => 11,
-                'top_band_dynamic' => 15,
-                'conviction_gate' => 0.38,
+                'top_band_dynamic' => $aggressiveness >= 1.08 ? 20 : 15,
+                'conviction_gate' => $aggressiveness >= 1.08 ? 0.30 : 0.38,
                 'elite_gate' => 0.64,
             ];
         }
@@ -225,6 +227,16 @@ class CandidateGeneratorService
                 ($cycle * 0.30) +
                 $repeatBoost +
                 $cycleMissingBoost;
+
+            $learningBias = (float) (
+                $weights['main_learning']['number_bias'][$number]
+                ?? $weights['main_learning']['number_bias'][(string) $number]
+                ?? 0.0
+            );
+
+            if ($learningBias !== 0.0) {
+                $consensusValue += $learningBias;
+            }
 
             $consensus[$number] = [
                 'frequency' => $frequency,

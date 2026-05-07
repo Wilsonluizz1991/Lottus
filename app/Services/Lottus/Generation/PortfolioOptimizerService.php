@@ -24,6 +24,23 @@ class PortfolioOptimizerService
     $originalPool = array_values($rankedGames);
     $pool = array_values($rankedGames);
 
+    $dynamicElitePortfolio = app(DynamicElitePortfolioStrategy::class);
+
+    if ($dynamicElitePortfolio->shouldHandle($quantidade, $this->tuning)) {
+        $selected = $dynamicElitePortfolio->select($originalPool, $quantidade, $this->tuning);
+
+        if (count($selected) >= min($quantidade, count($originalPool))) {
+            app(EliteSelectionAuditService::class)->audit(
+                $originalPool,
+                $selected,
+                $this->tuning,
+                $quantidade
+            );
+
+            return array_slice($selected, 0, $quantidade);
+        }
+    }
+
     usort($pool, function ($a, $b) {
         return $this->rawPreservationValue($b) <=> $this->rawPreservationValue($a);
     });
@@ -54,6 +71,18 @@ class PortfolioOptimizerService
     foreach ($topRawCandidates as $candidate) {
         if (! $this->alreadySelected($candidate, $selected)) {
             $selected[] = $candidate;
+        }
+    }
+
+    foreach ($this->extractHistoricalPeakLockedCandidates($originalPool, $selected, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'historical_peak_lock')) {
+            continue;
+        }
+    }
+
+    foreach ($this->extractShortPackageHighCeilingCandidates($originalPool, $selected, $quantidade) as $candidate) {
+        if (! $this->tryAddCandidate($selected, $candidate, $quantidade, 'short_high_ceiling_guard')) {
+            continue;
         }
     }
 
@@ -214,7 +243,7 @@ class PortfolioOptimizerService
             return false;
         }
 
-        if ($phase === 'score_rank_guard') {
+        if (in_array($phase, ['score_rank_guard', 'short_high_ceiling_guard', 'historical_peak_lock', 'dynamic_elite_portfolio'], true)) {
             return true;
         }
 
@@ -422,11 +451,20 @@ class PortfolioOptimizerService
 
         $poolCount = count($originalPool);
         $window = max(0, (int) $this->tuningValue('score_rank_guard.window', 2));
+        $anchorWindow = max(
+            $window,
+            (int) $this->tuningValue('score_rank_guard.anchor_window', 8)
+        );
         $perBandLimit = max(1, (int) $this->tuningValue('score_rank_guard.per_band_limit', 1));
         $latePerBandLimit = max($perBandLimit, (int) $this->tuningValue('score_rank_guard.late_per_band_limit', 2));
         $lateBandThreshold = (float) $this->tuningValue('score_rank_guard.late_band_threshold', 0.50);
+        $anchorSlotLimit = $quantidade <= $smallQuantityMax
+            ? (int) $this->tuningValue('score_rank_guard.small_quantity_anchor_slot_limit', 7)
+            : (int) $this->tuningValue('score_rank_guard.anchor_slot_limit', $slots);
         $candidates = [];
         $seen = [];
+        $anchorCandidates = [];
+        $bandCandidates = [];
 
         $anchorRanks = $quantidade <= $smallQuantityMax
             ? $this->tuningValue('score_rank_guard.small_quantity_anchor_ranks', [])
@@ -437,34 +475,77 @@ class PortfolioOptimizerService
 
         if (is_array($anchorRanks)) {
             foreach ($anchorRanks as $rank) {
-                if (count($candidates) >= $slots) {
+                if (count($anchorCandidates) >= $anchorSlotLimit) {
                     break;
                 }
 
                 $index = max(0, min($poolCount - 1, ((int) $rank) - 1));
-                $candidate = $originalPool[$index] ?? null;
+                $exactCandidate = $this->buildScoreRankGuardCandidate(
+                    $originalPool,
+                    $index,
+                    $selected,
+                    $poolCount,
+                    (int) $rank,
+                    null
+                );
 
-                if (! is_array($candidate)) {
-                    continue;
+                if ($exactCandidate !== null) {
+                    $key = $this->candidateKey($exactCandidate);
+
+                    if (! isset($seen[$key])) {
+                        $anchorCandidates[] = $exactCandidate;
+                        $seen[$key] = true;
+
+                        continue;
+                    }
                 }
 
-                $key = $this->candidateKey($candidate);
+                $slice = [];
 
-                if (isset($seen[$key]) || $this->alreadySelected($candidate, $selected)) {
-                    continue;
+                foreach ($this->nearbyRankIndexes($index, $poolCount, $anchorWindow) as $nearbyIndex) {
+                    $candidate = $this->buildScoreRankGuardCandidate(
+                        $originalPool,
+                        $nearbyIndex,
+                        $selected,
+                        $poolCount,
+                        (int) $rank,
+                        null
+                    );
+
+                    if ($candidate === null) {
+                        continue;
+                    }
+
+                    $key = $this->candidateKey($candidate);
+
+                    if (isset($seen[$key])) {
+                        continue;
+                    }
+
+                    $slice[] = $candidate;
                 }
 
-                $candidate['score_rank_guard'] = true;
-                $candidate['score_rank_guard_anchor_rank'] = (int) $rank;
-                $candidate['score_rank_guard_rank'] = $index + 1;
+                usort($slice, function (array $a, array $b): int {
+                    return ($b['score_rank_guard_value'] ?? 0.0) <=> ($a['score_rank_guard_value'] ?? 0.0);
+                });
 
-                $candidates[] = $candidate;
-                $seen[$key] = true;
+                foreach ($slice as $candidate) {
+                    $key = $this->candidateKey($candidate);
+
+                    if (isset($seen[$key])) {
+                        continue;
+                    }
+
+                    $anchorCandidates[] = $candidate;
+                    $seen[$key] = true;
+
+                    break;
+                }
             }
         }
 
         foreach ($bands as $band) {
-            if (count($candidates) >= $slots) {
+            if ((count($anchorCandidates) + count($bandCandidates)) >= ($slots * 2)) {
                 break;
             }
 
@@ -473,13 +554,20 @@ class PortfolioOptimizerService
             $addedForBand = 0;
 
             foreach ($this->nearbyRankIndexes($center, $poolCount, $window) as $index) {
-                if (count($candidates) >= $slots || $addedForBand >= $bandLimit) {
+                if ($addedForBand >= $bandLimit) {
                     break;
                 }
 
-                $candidate = $originalPool[$index] ?? null;
+                $candidate = $this->buildScoreRankGuardCandidate(
+                    $originalPool,
+                    $index,
+                    $selected,
+                    $poolCount,
+                    null,
+                    (float) $band
+                );
 
-                if (! is_array($candidate)) {
+                if ($candidate === null) {
                     continue;
                 }
 
@@ -489,17 +577,408 @@ class PortfolioOptimizerService
                     continue;
                 }
 
-                $candidate['score_rank_guard'] = true;
-                $candidate['score_rank_guard_band'] = (float) $band;
-                $candidate['score_rank_guard_rank'] = $index + 1;
-
-                $candidates[] = $candidate;
+                $bandCandidates[] = $candidate;
                 $seen[$key] = true;
                 $addedForBand++;
             }
         }
 
-        return $candidates;
+        return array_slice(array_merge($anchorCandidates, $bandCandidates), 0, $slots);
+    }
+
+    protected function extractHistoricalPeakLockedCandidates(array $originalPool, array $selected, int $quantidade): array
+    {
+        if (
+            empty($originalPool)
+            || ! (bool) $this->tuningValue('historical_peak_lock.enabled', true)
+            || $quantidade > (int) $this->tuningValue('historical_peak_lock.max_quantity', 25)
+        ) {
+            return [];
+        }
+
+        $limit = min(
+            max(0, $quantidade - count($selected)),
+            max(0, (int) $this->tuningValue('historical_peak_lock.limit', 2))
+        );
+
+        if ($limit <= 0) {
+            return [];
+        }
+
+        $rankWindow = min(
+            count($originalPool),
+            max(1, (int) $this->tuningValue('historical_peak_lock.rank_window', 700))
+        );
+        $minMaxHits = (int) $this->tuningValue('historical_peak_lock.min_historical_max_hits', 14);
+        $minHits14Plus = (int) $this->tuningValue('historical_peak_lock.min_historical_14_plus', 1);
+        $candidates = [];
+
+        for ($index = 0; $index < $rankWindow; $index++) {
+            $candidate = $originalPool[$index] ?? null;
+
+            if (! is_array($candidate) || $this->alreadySelected($candidate, $selected)) {
+                continue;
+            }
+
+            $historicalMaxHits = (int) ($candidate['historical_max_hits'] ?? 0);
+            $historical14Plus = (int) ($candidate['historical_14_plus'] ?? 0);
+
+            if ($historicalMaxHits < $minMaxHits || $historical14Plus < $minHits14Plus) {
+                continue;
+            }
+
+            $candidate['historical_peak_lock'] = true;
+            $candidate['historical_peak_lock_rank'] = $index + 1;
+            $candidate['historical_peak_lock_value'] =
+                $this->rawPreservationValue($candidate)
+                + ((float) ($candidate['near_15_score'] ?? 0.0) * 120.0)
+                + ($historicalMaxHits * 900.0)
+                + ($historical14Plus * 650.0)
+                - (($index + 1) * 0.8);
+
+            $candidates[] = $candidate;
+        }
+
+        usort($candidates, function (array $a, array $b): int {
+            return ($b['historical_peak_lock_value'] ?? 0.0) <=> ($a['historical_peak_lock_value'] ?? 0.0);
+        });
+
+        return array_slice($candidates, 0, $limit);
+    }
+
+    protected function extractShortPackageHighCeilingCandidates(array $originalPool, array $selected, int $quantidade): array
+    {
+        if (
+            empty($originalPool)
+            || ! (bool) $this->tuningValue('short_high_ceiling_guard.enabled', true)
+            || $quantidade > (int) $this->tuningValue('short_high_ceiling_guard.max_quantity', 10)
+        ) {
+            return [];
+        }
+
+        $limit = min(
+            max(0, $quantidade - count($selected)),
+            max(0, (int) $this->tuningValue('short_high_ceiling_guard.limit', 3))
+        );
+
+        if ($limit <= 0) {
+            return [];
+        }
+
+        $strategies = $this->tuningValue('short_high_ceiling_guard.strategies', [
+            'elite_high_ceiling',
+            'controlled_delay',
+            'explosive_hybrid',
+            'correlation_cluster',
+            'anti_mean_high_ceiling',
+            'historical_replay',
+            'strategic_repeat',
+        ]);
+
+        if (! is_array($strategies) || empty($strategies)) {
+            return [];
+        }
+
+        $strategyLookup = array_fill_keys($strategies, true);
+        $poolLimit = min(
+            count($originalPool),
+            max(1, (int) $this->tuningValue('short_high_ceiling_guard.rank_window', 2600))
+        );
+        $perStrategyLimit = max(1, (int) $this->tuningValue('short_high_ceiling_guard.per_strategy_limit', 1));
+        $candidates = [];
+        $selectedCandidates = [];
+        $seen = [];
+
+        for ($index = 0; $index < $poolLimit; $index++) {
+            $candidate = $originalPool[$index] ?? null;
+
+            if (! is_array($candidate) || $this->alreadySelected($candidate, $selected)) {
+                continue;
+            }
+
+            $strategy = (string) ($candidate['strategy'] ?? $candidate['profile'] ?? 'unknown');
+            $profile = (string) ($candidate['profile'] ?? $strategy);
+
+            if (! isset($strategyLookup[$strategy]) && ! isset($strategyLookup[$profile])) {
+                continue;
+            }
+
+            $candidate['short_high_ceiling_guard'] = true;
+            $candidate['short_high_ceiling_rank'] = $index + 1;
+            $candidate['short_high_ceiling_value'] = $this->shortHighCeilingValue($candidate, $selected, $index + 1);
+
+            $candidates[] = $candidate;
+        }
+
+        foreach ($this->extractShortPackageRankSweepCandidates($originalPool, $selected, $strategyLookup, $limit) as $candidate) {
+            if (count($selectedCandidates) >= $limit) {
+                break;
+            }
+
+            $key = $this->candidateKey($candidate);
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $selectedCandidates[] = $candidate;
+            $seen[$key] = true;
+        }
+
+        usort($candidates, function (array $a, array $b): int {
+            return ($b['short_high_ceiling_value'] ?? 0.0) <=> ($a['short_high_ceiling_value'] ?? 0.0);
+        });
+
+        $strategyCounts = [];
+
+        foreach ($selectedCandidates as $candidate) {
+            $strategy = (string) ($candidate['strategy'] ?? $candidate['profile'] ?? 'unknown');
+            $strategyCounts[$strategy] = ($strategyCounts[$strategy] ?? 0) + 1;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (count($selectedCandidates) >= $limit) {
+                break;
+            }
+
+            $strategy = (string) ($candidate['strategy'] ?? $candidate['profile'] ?? 'unknown');
+            $key = $this->candidateKey($candidate);
+
+            if (isset($seen[$key]) || (($strategyCounts[$strategy] ?? 0) >= $perStrategyLimit)) {
+                continue;
+            }
+
+            $selectedCandidates[] = $candidate;
+            $seen[$key] = true;
+            $strategyCounts[$strategy] = ($strategyCounts[$strategy] ?? 0) + 1;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (count($selectedCandidates) >= $limit) {
+                break;
+            }
+
+            $key = $this->candidateKey($candidate);
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $selectedCandidates[] = $candidate;
+            $seen[$key] = true;
+        }
+
+        return $selectedCandidates;
+    }
+
+    protected function extractShortPackageRankSweepCandidates(
+        array $originalPool,
+        array $selected,
+        array $strategyLookup,
+        int $limit
+    ): array {
+        if (
+            $limit <= 0
+            || ! (bool) $this->tuningValue('short_high_ceiling_guard.rank_sweep_enabled', true)
+        ) {
+            return [];
+        }
+
+        $poolCount = count($originalPool);
+        $sweepLimit = min(
+            $limit,
+            max(0, (int) $this->tuningValue('short_high_ceiling_guard.rank_sweep_limit', 4))
+        );
+
+        if ($poolCount === 0 || $sweepLimit <= 0) {
+            return [];
+        }
+
+        $rankTargets = $this->tuningValue('short_high_ceiling_guard.rank_sweep_targets', [2180]);
+        $bandTargets = $this->tuningValue('short_high_ceiling_guard.rank_sweep_bands', [0.50]);
+        $strategyPriority = $this->tuningValue('short_high_ceiling_guard.rank_sweep_strategy_priority', [
+            'controlled_delay',
+            'elite_high_ceiling',
+            'correlation_cluster',
+            'explosive_hybrid',
+            'historical_replay',
+            'strategic_repeat',
+            'anti_mean_high_ceiling',
+        ]);
+
+        if (! is_array($rankTargets)) {
+            $rankTargets = [];
+        }
+
+        if (is_array($bandTargets)) {
+            foreach ($bandTargets as $band) {
+                $rankTargets[] = ((int) round(($poolCount - 1) * max(0.0, min(1.0, (float) $band)))) + 1;
+            }
+        }
+
+        if (! is_array($strategyPriority) || empty($strategyPriority)) {
+            $strategyPriority = array_keys($strategyLookup);
+        }
+
+        $strategyOrder = array_flip($strategyPriority);
+        $window = max(1, (int) $this->tuningValue('short_high_ceiling_guard.rank_sweep_window', 14));
+        $perTargetLimit = max(1, (int) $this->tuningValue('short_high_ceiling_guard.rank_sweep_per_target', 3));
+        $sweepCandidates = [];
+        $seen = [];
+
+        foreach ($rankTargets as $targetRank) {
+            if (count($sweepCandidates) >= $sweepLimit) {
+                break;
+            }
+
+            $targetIndex = max(0, min($poolCount - 1, ((int) $targetRank) - 1));
+            $slice = [];
+
+            foreach ($this->nearbyRankIndexes($targetIndex, $poolCount, $window) as $index) {
+                $candidate = $originalPool[$index] ?? null;
+
+                if (! is_array($candidate) || $this->alreadySelected($candidate, $selected)) {
+                    continue;
+                }
+
+                $strategy = (string) ($candidate['strategy'] ?? $candidate['profile'] ?? 'unknown');
+                $profile = (string) ($candidate['profile'] ?? $strategy);
+
+                if (! isset($strategyLookup[$strategy]) && ! isset($strategyLookup[$profile])) {
+                    continue;
+                }
+
+                $candidate['short_high_ceiling_guard'] = true;
+                $candidate['short_high_ceiling_rank_sweep'] = true;
+                $candidate['short_high_ceiling_rank_sweep_target'] = (int) $targetRank;
+                $candidate['short_high_ceiling_rank'] = $index + 1;
+                $candidate['short_high_ceiling_value'] = $this->shortHighCeilingValue($candidate, $selected, $index + 1);
+
+                $slice[] = $candidate;
+            }
+
+            usort($slice, function (array $a, array $b) use ($strategyOrder): int {
+                $strategyA = (string) ($a['strategy'] ?? $a['profile'] ?? 'unknown');
+                $strategyB = (string) ($b['strategy'] ?? $b['profile'] ?? 'unknown');
+                $orderA = $strategyOrder[$strategyA] ?? PHP_INT_MAX;
+                $orderB = $strategyOrder[$strategyB] ?? PHP_INT_MAX;
+
+                if ($orderA !== $orderB) {
+                    return $orderA <=> $orderB;
+                }
+
+                return ((int) ($a['short_high_ceiling_rank'] ?? PHP_INT_MAX))
+                    <=>
+                    ((int) ($b['short_high_ceiling_rank'] ?? PHP_INT_MAX));
+            });
+
+            $addedForTarget = 0;
+
+            foreach ($slice as $candidate) {
+                if (count($sweepCandidates) >= $sweepLimit || $addedForTarget >= $perTargetLimit) {
+                    break;
+                }
+
+                $key = $this->candidateKey($candidate);
+
+                if (isset($seen[$key])) {
+                    continue;
+                }
+
+                $sweepCandidates[] = $candidate;
+                $seen[$key] = true;
+                $addedForTarget++;
+            }
+        }
+
+        return $sweepCandidates;
+    }
+
+    protected function buildScoreRankGuardCandidate(
+        array $originalPool,
+        int $index,
+        array $selected,
+        int $poolCount,
+        ?int $anchorRank,
+        ?float $band
+    ): ?array {
+        $candidate = $originalPool[$index] ?? null;
+
+        if (! is_array($candidate) || $this->alreadySelected($candidate, $selected)) {
+            return null;
+        }
+
+        $candidate['score_rank_guard'] = true;
+        $candidate['score_rank_guard_rank'] = $index + 1;
+
+        if ($anchorRank !== null) {
+            $candidate['score_rank_guard_anchor_rank'] = $anchorRank;
+        }
+
+        if ($band !== null) {
+            $candidate['score_rank_guard_band'] = $band;
+        }
+
+        $candidate['score_rank_guard_value'] = $this->scoreRankGuardValue(
+            $candidate,
+            $selected,
+            $index + 1,
+            $poolCount,
+            $anchorRank,
+            $band
+        );
+
+        return $candidate;
+    }
+
+    protected function scoreRankGuardValue(
+        array $candidate,
+        array $selected,
+        int $rank,
+        int $poolCount,
+        ?int $anchorRank,
+        ?float $band
+    ): float {
+        $value = $this->shortHighCeilingValue($candidate, $selected, $rank);
+
+        if ($anchorRank !== null) {
+            $distance = abs($rank - $anchorRank);
+            $value += max(0.0, 350.0 - ($distance * 28.0));
+        }
+
+        if ($band !== null && $poolCount > 0) {
+            $centerRank = ((int) round(($poolCount - 1) * max(0.0, min(1.0, $band)))) + 1;
+            $distance = abs($rank - $centerRank);
+            $value += max(0.0, 260.0 - ($distance * 14.0));
+        }
+
+        return $value;
+    }
+
+    protected function shortHighCeilingValue(array $candidate, array $selected, int $rank): float
+    {
+        $strategy = (string) ($candidate['strategy'] ?? $candidate['profile'] ?? 'unknown');
+        $strategyBoosts = $this->tuningValue('short_high_ceiling_guard.strategy_boosts', []);
+        $strategyBoost = is_array($strategyBoosts)
+            ? (float) ($strategyBoosts[$strategy] ?? 0.0)
+            : 0.0;
+
+        $historicalMaxHits = (int) ($candidate['historical_max_hits'] ?? 0);
+        $historical14Plus = (int) ($candidate['historical_14_plus'] ?? 0);
+
+        $value = $this->portfolioExpansionValue($candidate, $selected) * 0.22;
+        $value += (float) ($candidate['near_15_score'] ?? 0.0) * 22.0;
+        $value += (float) ($candidate['ceiling_score'] ?? 0.0) * 16.0;
+        $value += (float) ($candidate['historical_peak_score'] ?? 0.0) * 220.0;
+        $value += $historicalMaxHits * 34.0;
+        $value += $historical14Plus * 80.0;
+        $value += $strategyBoost;
+
+        if ($rank > 0) {
+            $value += min(240.0, log($rank + 1, 2) * 18.0);
+        }
+
+        return $value;
     }
 
     protected function nearbyRankIndexes(int $center, int $poolCount, int $window): array

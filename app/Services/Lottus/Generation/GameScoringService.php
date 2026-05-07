@@ -25,6 +25,7 @@ class GameScoringService
             $profile = $candidate['profile'] ?? 'balanced';
             $strategy = $candidate['strategy'] ?? $profile;
             $cycleMissing = $candidate['cycle_missing'] ?? [];
+            $learningContext = $candidate['main_learning'] ?? [];
 
             $game = array_values(array_unique(array_map('intval', $game)));
             sort($game);
@@ -195,20 +196,12 @@ class GameScoringService
                 $huntScore += 95.00;
             } elseif (($historicalPerformance['max_hits'] ?? 0) >= 14) {
                 $huntScore += 58.00;
-            } elseif (($historicalPerformance['max_hits'] ?? 0) >= 13) {
-                $huntScore += 22.00;
             }
 
             if (($historicalPerformance['hits_14_plus'] ?? 0) >= 2) {
                 $huntScore += 34.00;
             } elseif (($historicalPerformance['hits_14_plus'] ?? 0) === 1) {
                 $huntScore += 18.00;
-            }
-
-            if (($historicalPerformance['hits_13_plus'] ?? 0) >= 8) {
-                $huntScore += 14.00;
-            } elseif (($historicalPerformance['hits_13_plus'] ?? 0) >= 4) {
-                $huntScore += 8.00;
             }
 
             /*
@@ -245,7 +238,7 @@ class GameScoringService
             $huntScore *= $eliteFactor;
 
             $profileBoost = match ($profile) {
-                'aggressive', 'explosive', 'high_ceiling', 'explosive_hybrid' => 1.12,
+                'aggressive', 'explosive', 'high_ceiling', 'explosive_hybrid', 'single_swap_sweep', 'double_swap_sweep' => 1.16,
                 'correlation_cluster', 'historical_replay' => 1.10,
                 'strategic_repeat', 'controlled_delay' => 1.08,
                 'anti_mean' => 1.05,
@@ -253,18 +246,102 @@ class GameScoringService
                 default => 1.04,
             };
 
-            $score = $huntScore * $profileBoost;
+            $strategyBoost = match ($strategy) {
+                'single_swap_sweep', 'double_swap_sweep' => 1.22,
+                'deterministic_high_ceiling', 'elite_high_ceiling', 'explosive_hybrid' => 1.14,
+                'forced_pair_synergy_core', 'correlation_cluster', 'historical_replay', 'historical_elite_mutation' => 1.11,
+                'cycle_missing_rescue', 'controlled_delay', 'repeat_pressure_core', 'strategic_repeat' => 1.09,
+                'anti_mean_high_ceiling' => 1.08,
+                'baseline_explosive' => 1.06,
+                default => 1.00,
+            };
+
+            $explosiveScore = $this->explosiveScore(
+                $strategy,
+                $correlationQuality,
+                $repeatQuality,
+                $cycleQuality,
+                $repeatCount,
+                $cycleHit,
+                $clusterStrength,
+                $sum,
+                $oddCount,
+                $longestSequence
+            );
+            $near15Score = $this->near15Score(
+                $ceilingScore,
+                $historicalPeakQuality,
+                $historicalPerformance,
+                $correlationQuality,
+                $cycleQuality,
+                $repeatCount,
+                $cycleHit
+            );
+            $antiAveragePenalty = $this->antiAveragePenalty(
+                $ceilingScore,
+                $historicalPerformance,
+                $repeatCount,
+                $cycleHit,
+                $sum,
+                $oddCount,
+                $longestSequence
+            );
+            $elitePotentialScore = $this->elitePotentialScore(
+                $strategy,
+                $ceilingScore,
+                $near15Score,
+                $explosiveScore,
+                $historicalPeakQuality,
+                $historicalPerformance,
+                $correlationQuality,
+                $repeatQuality,
+                $cycleQuality,
+                $repeatCount,
+                $cycleHit,
+                $clusterStrength,
+                $sum,
+                $oddCount,
+                $longestSequence,
+                $antiAveragePenalty
+            );
+
+            $score = (
+                ($elitePotentialScore * 1.62) +
+                ($huntScore * 0.36) +
+                ($ceilingScore * 4.00) +
+                ($near15Score * 1.20)
+            ) * max($profileBoost, $strategyBoost);
+
+            if (! empty($learningContext)) {
+                $score = $this->applyLearningScore(
+                    $score,
+                    $game,
+                    $strategy,
+                    $learningContext,
+                    $correlationContext,
+                    $elitePotentialScore,
+                    $near15Score,
+                    $ceilingScore,
+                    $explosiveScore
+                );
+                $elitePotentialScore *= (float) ($learningContext['score_adjustments']['elite_potential_multiplier'] ?? 1.0);
+                $near15Score *= (float) ($learningContext['score_adjustments']['near15_multiplier'] ?? 1.0);
+            }
 
             $ranked[] = [
                 'dezenas' => $game,
                 'profile' => $profile,
                 'strategy' => $strategy,
+                'main_learning' => $learningContext,
                 'score' => round($score, 6),
                 'extreme_score' => round($huntScore, 6),
                 'stat_score' => round($statScore, 6),
                 'structure_score' => round($structureScore, 6),
                 'ceiling_score' => round($ceilingScore, 6),
-                'near_15_score' => round($ceilingScore + ($historicalPeakQuality * 22.0), 6),
+                'near_15_score' => round($near15Score, 6),
+                'explosive_score' => round($explosiveScore, 6),
+                'anti_average_penalty' => round($antiAveragePenalty, 6),
+                'elite_potential_score' => round($elitePotentialScore, 6),
                 'pares' => $evenCount,
                 'impares' => $oddCount,
                 'soma' => $sum,
@@ -298,7 +375,10 @@ class GameScoringService
                     'cycle_quality' => round($cycleQuality, 4),
                     'historical_peak_quality' => round($historicalPeakQuality, 4),
                     'ceiling_score' => round($ceilingScore, 4),
-                    'near_15_score' => round($ceilingScore + ($historicalPeakQuality * 22.0), 4),
+                    'near_15_score' => round($near15Score, 4),
+                    'explosive_score' => round($explosiveScore, 4),
+                    'anti_average_penalty' => round($antiAveragePenalty, 4),
+                    'elite_potential_score' => round($elitePotentialScore, 4),
                     'historical_max_hits' => (int) ($historicalPerformance['max_hits'] ?? 0),
                     'historical_13_plus' => (int) ($historicalPerformance['hits_13_plus'] ?? 0),
                     'historical_14_plus' => (int) ($historicalPerformance['hits_14_plus'] ?? 0),
@@ -316,6 +396,269 @@ class GameScoringService
         usort($ranked, fn ($a, $b) => $b['score'] <=> $a['score']);
 
         return $ranked;
+    }
+
+    protected function applyLearningScore(
+        float $score,
+        array $game,
+        string $strategy,
+        array $learningContext,
+        array $correlationContext,
+        float $elitePotentialScore,
+        float $near15Score,
+        float $ceilingScore,
+        float $explosiveScore
+    ): float {
+        $numberBias = $learningContext['number_bias'] ?? [];
+        $pairBias = $learningContext['pair_bias'] ?? [];
+        $strategyWeights = $learningContext['strategy_weights'] ?? [];
+        $scoreAdjustments = $learningContext['score_adjustments'] ?? [];
+        $aggressiveness = $learningContext['aggressiveness'] ?? [];
+
+        $numberValue = 0.0;
+
+        foreach ($game as $number) {
+            $numberValue += (float) ($numberBias[$number] ?? $numberBias[(string) $number] ?? 0.0);
+        }
+
+        $pairValue = 0.0;
+
+        for ($i = 0; $i < count($game) - 1; $i++) {
+            for ($j = $i + 1; $j < count($game); $j++) {
+                $a = min($game[$i], $game[$j]);
+                $b = max($game[$i], $game[$j]);
+                $key = $a . '-' . $b;
+                $pairValue += (float) ($pairBias[$key] ?? 0.0);
+            }
+        }
+
+        $strategyMultiplier = (float) ($strategyWeights[$strategy] ?? 1.0);
+        $eliteMultiplier = (float) ($scoreAdjustments['elite_potential_multiplier'] ?? 1.0);
+        $near15Multiplier = (float) ($scoreAdjustments['near15_multiplier'] ?? 1.0);
+        $concentration = (float) ($aggressiveness['elite_concentration'] ?? 1.0);
+
+        $learningBoost =
+            ($numberValue * 180.0) +
+            ($pairValue * 38.0) +
+            (($elitePotentialScore * ($eliteMultiplier - 1.0)) * 1.4) +
+            (($near15Score * ($near15Multiplier - 1.0)) * 2.2) +
+            ($ceilingScore * max(0.0, $concentration - 1.0) * 6.0) +
+            ($explosiveScore * max(0.0, $strategyMultiplier - 1.0) * 4.0);
+
+        return max(0.0, ($score * max(0.88, min(1.22, $strategyMultiplier))) + $learningBoost);
+    }
+
+    protected function explosiveScore(
+        string $strategy,
+        float $correlationQuality,
+        float $repeatQuality,
+        float $cycleQuality,
+        int $repeatCount,
+        int $cycleHit,
+        float $clusterStrength,
+        int $sum,
+        int $oddCount,
+        int $longestSequence
+    ): float {
+        $score = 0.0;
+
+        $score += $correlationQuality * 22.0;
+        $score += $repeatQuality * 13.0;
+        $score += $cycleQuality * 11.0;
+
+        if ($repeatCount >= 8 && $repeatCount <= 11) {
+            $score += 18.0;
+        }
+
+        if ($cycleHit >= 4) {
+            $score += 16.0;
+        } elseif ($cycleHit === 3) {
+            $score += 11.0;
+        }
+
+        if ($clusterStrength >= 10) {
+            $score += 12.0;
+        } elseif ($clusterStrength >= 8) {
+            $score += 7.0;
+        }
+
+        if (($sum >= 150 && $sum <= 169) || ($sum >= 216 && $sum <= 235)) {
+            $score += 7.0;
+        }
+
+        if ($oddCount === 5 || $oddCount === 10) {
+            $score += 5.0;
+        }
+
+        if ($longestSequence >= 4 && $longestSequence <= 7) {
+            $score += 6.0;
+        }
+
+        $score *= match ($strategy) {
+            'single_swap_sweep', 'double_swap_sweep' => 1.26,
+            'deterministic_high_ceiling', 'elite_high_ceiling', 'explosive_hybrid' => 1.20,
+            'forced_pair_synergy_core', 'correlation_cluster', 'historical_elite_mutation' => 1.17,
+            'cycle_missing_rescue', 'controlled_delay', 'repeat_pressure_core' => 1.12,
+            'anti_mean_high_ceiling' => 1.10,
+            default => 1.00,
+        };
+
+        return $score;
+    }
+
+    protected function near15Score(
+        float $ceilingScore,
+        float $historicalPeakQuality,
+        array $historicalPerformance,
+        float $correlationQuality,
+        float $cycleQuality,
+        int $repeatCount,
+        int $cycleHit
+    ): float {
+        $historicalMaxHits = (int) ($historicalPerformance['max_hits'] ?? 0);
+        $historical14Plus = (int) ($historicalPerformance['hits_14_plus'] ?? 0);
+
+        $score = $ceilingScore;
+        $score += $historicalPeakQuality * 42.0;
+        $score += $correlationQuality * 16.0;
+        $score += $cycleQuality * 10.0;
+
+        if ($historicalMaxHits >= 15) {
+            $score += 450.0;
+        } elseif ($historicalMaxHits >= 14) {
+            $score += 420.0;
+        }
+
+        $score += min(900.0, $historical14Plus * 180.0);
+
+        if ($repeatCount >= 8 && $repeatCount <= 11 && $cycleHit >= 2) {
+            $score += 24.0;
+        }
+
+        if ($cycleHit >= 4) {
+            $score += 18.0;
+        }
+
+        return max(0.0, $score);
+    }
+
+    protected function antiAveragePenalty(
+        float $ceilingScore,
+        array $historicalPerformance,
+        int $repeatCount,
+        int $cycleHit,
+        int $sum,
+        int $oddCount,
+        int $longestSequence
+    ): float {
+        if (
+            ($historicalPerformance['max_hits'] ?? 0) >= 14 ||
+            ($historicalPerformance['hits_14_plus'] ?? 0) > 0 ||
+            $ceilingScore >= 62.0
+        ) {
+            return 0.0;
+        }
+
+        $penalty = 0.0;
+
+        if ($sum >= 175 && $sum <= 205) {
+            $penalty += 18.0;
+        }
+
+        if ($oddCount === 7 || $oddCount === 8) {
+            $penalty += 14.0;
+        }
+
+        if ($longestSequence >= 3 && $longestSequence <= 5) {
+            $penalty += 12.0;
+        }
+
+        if ($repeatCount === 7 || $repeatCount === 8 || $repeatCount === 9) {
+            $penalty += 10.0;
+        }
+
+        if ($cycleHit <= 1) {
+            $penalty += 10.0;
+        }
+
+        return $penalty;
+    }
+
+    protected function elitePotentialScore(
+        string $strategy,
+        float $ceilingScore,
+        float $near15Score,
+        float $explosiveScore,
+        float $historicalPeakQuality,
+        array $historicalPerformance,
+        float $correlationQuality,
+        float $repeatQuality,
+        float $cycleQuality,
+        int $repeatCount,
+        int $cycleHit,
+        float $clusterStrength,
+        int $sum,
+        int $oddCount,
+        int $longestSequence,
+        float $antiAveragePenalty
+    ): float {
+        $historicalMaxHits = (int) ($historicalPerformance['max_hits'] ?? 0);
+        $historical14Plus = (int) ($historicalPerformance['hits_14_plus'] ?? 0);
+
+        $score = 0.0;
+        $score += $ceilingScore * 3.25;
+        $score += $near15Score * 2.35;
+        $score += $explosiveScore * 2.70;
+        $score += $historicalPeakQuality * 95.0;
+        $score += $correlationQuality * 34.0;
+        $score += $repeatQuality * 20.0;
+        $score += $cycleQuality * 18.0;
+
+        if ($historicalMaxHits >= 15) {
+            $score += 2600.0;
+        } elseif ($historicalMaxHits >= 14) {
+            $score += 4200.0;
+        }
+
+        $score += min(5200.0, $historical14Plus * 1200.0);
+
+        if ($repeatCount >= 8 && $repeatCount <= 11) {
+            $score += 92.0;
+        }
+
+        if ($cycleHit >= 4) {
+            $score += 86.0;
+        } elseif ($cycleHit === 3) {
+            $score += 52.0;
+        }
+
+        if ($clusterStrength >= 10) {
+            $score += 54.0;
+        }
+
+        if (($sum >= 150 && $sum <= 169) || ($sum >= 216 && $sum <= 235)) {
+            $score += 28.0;
+        }
+
+        if ($oddCount === 5 || $oddCount === 10) {
+            $score += 18.0;
+        }
+
+        if ($longestSequence >= 4 && $longestSequence <= 7) {
+            $score += 22.0;
+        }
+
+        $score *= match ($strategy) {
+            'single_swap_sweep', 'double_swap_sweep' => 1.28,
+            'deterministic_high_ceiling', 'elite_high_ceiling', 'explosive_hybrid' => 1.18,
+            'forced_pair_synergy_core', 'correlation_cluster', 'historical_elite_mutation' => 1.15,
+            'cycle_missing_rescue', 'controlled_delay', 'repeat_pressure_core' => 1.10,
+            'anti_mean_high_ceiling' => 1.08,
+            'baseline_explosive' => 1.04,
+            default => 1.00,
+        };
+
+        return max(0.0, $score - $antiAveragePenalty);
     }
 
     protected function ceilingScore(
@@ -379,9 +722,10 @@ class GameScoringService
         }
 
         $score *= match ($strategy) {
-            'elite_high_ceiling', 'explosive_hybrid' => 1.16,
-            'correlation_cluster', 'historical_replay' => 1.13,
-            'strategic_repeat', 'controlled_delay' => 1.09,
+            'single_swap_sweep', 'double_swap_sweep' => 1.24,
+            'deterministic_high_ceiling', 'elite_high_ceiling', 'explosive_hybrid' => 1.16,
+            'forced_pair_synergy_core', 'correlation_cluster', 'historical_replay', 'historical_elite_mutation' => 1.13,
+            'repeat_pressure_core', 'strategic_repeat', 'cycle_missing_rescue', 'controlled_delay' => 1.09,
             'anti_mean_high_ceiling' => 1.06,
             default => 1.00,
         };
@@ -450,18 +794,15 @@ class GameScoringService
     protected function historicalPeakQuality(array $performance): float
     {
         $maxHits = (int) ($performance['max_hits'] ?? 0);
-        $hits13Plus = (int) ($performance['hits_13_plus'] ?? 0);
         $hits14Plus = (int) ($performance['hits_14_plus'] ?? 0);
 
         $maxScore = match (true) {
             $maxHits >= 15 => 1.00,
             $maxHits >= 14 => 0.82,
-            $maxHits >= 13 => 0.52,
-            $maxHits >= 12 => 0.24,
             default => 0.0,
         };
 
-        $densityScore = min(1.0, ($hits14Plus * 0.22) + ($hits13Plus * 0.035));
+        $densityScore = min(1.0, $hits14Plus * 0.24);
 
         return max(0.0, min(1.0, ($maxScore * 0.72) + ($densityScore * 0.28)));
     }

@@ -14,6 +14,7 @@ use App\Services\Lottus\Generation\CoreClusterPreservationService;
 use App\Services\Lottus\Generation\GameScoringService;
 use App\Services\Lottus\Generation\HighCeilingCandidateGeneratorService;
 use App\Services\Lottus\Generation\PortfolioOptimizerService;
+use App\Services\Lottus\MainLearning\LottusMainLearningSnapshotService;
 use App\Services\Lottus\Persistence\GeneratedBetPersistenceService;
 
 class LotofacilEngine
@@ -30,6 +31,7 @@ class LotofacilEngine
         protected GameScoringService $gameScoringService,
         protected CoreClusterPreservationService $coreClusterPreservationService,
         protected PortfolioOptimizerService $portfolioOptimizerService,
+        protected LottusMainLearningSnapshotService $mainLearningSnapshotService,
         protected GeneratedBetPersistenceService $generatedBetPersistenceService
     ) {
     }
@@ -40,6 +42,8 @@ class LotofacilEngine
         $concursoBase = $payload['concurso_base'];
         $quantidade = (int) $payload['quantidade'];
         $email = $payload['email'];
+
+        $this->seedProductionEntropy($concursoBase, $quantidade, $email);
 
         $historico = $this->historicalDataService->getUntilContest($concursoBase->concurso);
 
@@ -54,6 +58,9 @@ class LotofacilEngine
         $cycleContext = $this->cycleAnalysisService->analyze($historico);
 
         $weights = $this->resolveWeights($cycleContext, $concursoBase);
+        $weights['main_learning'] = $this->mainLearningSnapshotService->contextForConcursoBase(
+            (int) $concursoBase->concurso
+        );
 
         $candidateGames = $this->candidateGeneratorService->generate(
             $quantidade,
@@ -82,6 +89,20 @@ class LotofacilEngine
         );
 
         $candidates = $this->mergeCandidatePayloads($candidatePayloads, $eliteCandidatePayloads);
+        $familyPayloads = $this->highCeilingCandidateGeneratorService->expandCandidateFamilies(
+            $candidates,
+            $frequencyContext,
+            $delayContext,
+            $correlationContext,
+            $structureContext,
+            $weights,
+            $historico
+        );
+        $candidates = $this->mergeCandidatePayloads($candidates, $familyPayloads);
+        $candidates = $this->mainLearningSnapshotService->decorateCandidates(
+            $candidates,
+            $weights['main_learning'] ?? []
+        );
 
         if (empty($candidates)) {
             throw new \Exception('Nenhum jogo candidato foi gerado pelo motor.');
@@ -103,7 +124,8 @@ class LotofacilEngine
             throw new \Exception('Nenhum jogo ranqueado foi produzido pelo motor.');
         }
 
-        $selectedGames = $this->portfolioOptimizerService->optimize($rankedGames, $quantidade);
+        $portfolioOptimizer = $this->portfolioOptimizerForContext($candidateWeights['main_learning'] ?? []);
+        $selectedGames = $portfolioOptimizer->optimize($rankedGames, $quantidade);
 
         if (count($selectedGames) < $quantidade) {
             throw new \Exception('O motor não conseguiu selecionar a quantidade solicitada de jogos.');
@@ -143,6 +165,41 @@ class LotofacilEngine
             'scores' => $cycleContext['scores'] ?? [],
             'cycle_scores' => $cycleContext['scores'] ?? [],
         ]);
+    }
+
+    protected function seedProductionEntropy(LotofacilConcurso $concursoBase, int $quantidade, string $email): void
+    {
+        if (! (bool) config('lottus.production_entropy.enabled', true)) {
+            return;
+        }
+
+        $seed = (int) config('lottus.production_entropy.base_seed', 20260506);
+        $seed += ((int) $concursoBase->concurso * 1009);
+        $seed += ((int) config('lottus.production_entropy.package_profile', 10) * 97);
+
+        if ((bool) config('lottus.production_entropy.email_variation', false)) {
+            $seed += abs(crc32(strtolower(trim($email)))) % 100000;
+        }
+
+        mt_srand($seed);
+        srand($seed);
+    }
+
+    protected function portfolioOptimizerForContext(array $mainLearningContext): PortfolioOptimizerService
+    {
+        $learningRules = $mainLearningContext['portfolio_rules']['dynamic_elite_portfolio'] ?? [];
+
+        if (empty($learningRules)) {
+            return $this->portfolioOptimizerService;
+        }
+
+        $tuning = config('lottus_portfolio_tuning.default', []);
+        $tuning['dynamic_elite_portfolio'] = array_replace_recursive(
+            $tuning['dynamic_elite_portfolio'] ?? [],
+            $learningRules
+        );
+
+        return new PortfolioOptimizerService($tuning);
     }
 
     protected function pickChampionWeights(): array
