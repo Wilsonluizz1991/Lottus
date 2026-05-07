@@ -9,14 +9,14 @@ return [
 
     'queue' => 'learning',
 
-    'learning_rate' => 0.08,
-    'decay_factor' => 0.92,
-    'confidence_threshold' => 0.62,
-    'max_delta_per_cycle' => 0.12,
-    'min_sample_size' => 30,
-    'min_validation_runs' => 3,
-    'min_win_rate' => 0.55,
-    'min_elite_delta' => 1,
+    'learning_rate' => (float) env('LOTTUS_MAIN_LEARNING_RATE', 0.08),
+    'decay_factor' => (float) env('LOTTUS_MAIN_LEARNING_DECAY_FACTOR', 0.92),
+    'confidence_threshold' => (float) env('LOTTUS_MAIN_LEARNING_CONFIDENCE_THRESHOLD', 0.62),
+    'max_delta_per_cycle' => (float) env('LOTTUS_MAIN_LEARNING_MAX_DELTA_PER_CYCLE', 0.12),
+    'min_sample_size' => (int) env('LOTTUS_MAIN_LEARNING_MIN_SAMPLE_SIZE', 30),
+    'min_validation_runs' => (int) env('LOTTUS_MAIN_LEARNING_MIN_VALIDATION_RUNS', 3),
+    'min_win_rate' => (float) env('LOTTUS_MAIN_LEARNING_MIN_WIN_RATE', 0.55),
+    'min_elite_delta' => (int) env('LOTTUS_MAIN_LEARNING_MIN_ELITE_DELTA', 1),
 
     'use_strategy_weights' => true,
     'use_number_bias' => true,
@@ -32,9 +32,9 @@ return [
     ],
 
     'validation_quantities' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-    'validation_lookback' => 12,
+    'validation_lookback' => (int) env('LOTTUS_MAIN_LEARNING_VALIDATION_LOOKBACK', 12),
     'walk_forward_min_history' => 30,
-    'evaluate_combined_variant' => false,
+    'evaluate_combined_variant' => (bool) env('LOTTUS_MAIN_LEARNING_EVALUATE_COMBINED', false),
 
     'candidate_generation' => [
         'adaptive_trend_candidates' => 900,
