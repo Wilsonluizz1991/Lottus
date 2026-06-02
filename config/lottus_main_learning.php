@@ -2,7 +2,7 @@
 
 return [
 
-    'enabled' => true,
+    'enabled' => (bool) env('LOTTUS_MAIN_LEARNING_ENABLED', true),
     'shadow_mode' => true,
     'use_promoted_only' => true,
     'allow_unvalidated_effects' => false,
