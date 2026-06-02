@@ -21,6 +21,10 @@ class ProcessMainLearning implements ShouldQueue
 
     public function handle(LottusMainAdaptiveLearningService $learningService): void
     {
+        if (! config('lottus_main_learning.enabled')) {
+            return;
+        }
+
         $learningService->processRun($this->learningRunId);
     }
 }
