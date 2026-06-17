@@ -61,6 +61,7 @@ class LotofacilEngine
         $weights['main_learning'] = $this->mainLearningSnapshotService->contextForConcursoBase(
             (int) $concursoBase->concurso
         );
+        $weights['commercial_generation'] = (bool) config('lottus.commercial_generation.enabled', true);
 
         $candidateGames = $this->candidateGeneratorService->generate(
             $quantidade,
@@ -77,6 +78,10 @@ class LotofacilEngine
             'explosive',
             $cycleContext['faltantes'] ?? []
         );
+        $candidatePayloads = $this->limitCommercialCandidates(
+            $candidatePayloads,
+            (int) config('lottus.commercial_generation.max_baseline_candidates', 450)
+        );
 
         $eliteCandidatePayloads = $this->highCeilingCandidateGeneratorService->generate(
             $quantidade,
@@ -86,6 +91,10 @@ class LotofacilEngine
             $structureContext,
             $weights,
             $historico
+        );
+        $eliteCandidatePayloads = $this->limitCommercialCandidates(
+            $eliteCandidatePayloads,
+            (int) config('lottus.commercial_generation.max_elite_candidates', 450)
         );
 
         $candidates = $this->mergeCandidatePayloads($candidatePayloads, $eliteCandidatePayloads);
@@ -98,7 +107,15 @@ class LotofacilEngine
             $weights,
             $historico
         );
+        $familyPayloads = $this->limitCommercialCandidates(
+            $familyPayloads,
+            (int) config('lottus.commercial_generation.max_family_candidates', 650)
+        );
         $candidates = $this->mergeCandidatePayloads($candidates, $familyPayloads);
+        $candidates = $this->limitCommercialCandidates(
+            $candidates,
+            (int) config('lottus.commercial_generation.max_rank_candidates', 1400)
+        );
         $candidates = $this->mainLearningSnapshotService->decorateCandidates(
             $candidates,
             $weights['main_learning'] ?? []
@@ -124,7 +141,7 @@ class LotofacilEngine
             throw new \Exception('Nenhum jogo ranqueado foi produzido pelo motor.');
         }
 
-        $portfolioOptimizer = $this->portfolioOptimizerForContext($candidateWeights['main_learning'] ?? []);
+        $portfolioOptimizer = $this->portfolioOptimizerForContext($weights['main_learning'] ?? []);
         $selectedGames = $portfolioOptimizer->optimize($rankedGames, $quantidade);
 
         if (count($selectedGames) < $quantidade) {
@@ -288,5 +305,18 @@ class LotofacilEngine
         }
 
         return $merged;
+    }
+
+    protected function limitCommercialCandidates(array $candidates, int $limit): array
+    {
+        if (! (bool) config('lottus.commercial_generation.enabled', true) || $limit <= 0) {
+            return $candidates;
+        }
+
+        if (count($candidates) <= $limit) {
+            return $candidates;
+        }
+
+        return array_slice($candidates, 0, $limit);
     }
 }

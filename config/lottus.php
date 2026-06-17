@@ -51,6 +51,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Commercial Generation Guardrails
+    |--------------------------------------------------------------------------
+    |
+    | O fluxo web roda dentro do PHP-FPM e precisa caber na memoria da instancia
+    | de producao. Backtests podem explorar universos muito maiores, mas a venda
+    | real deve ranquear um nucleo elite compacto para evitar 502/504.
+    |
+    */
+
+    'commercial_generation' => [
+        'enabled' => true,
+        'max_baseline_candidates' => 450,
+        'max_elite_candidates' => 450,
+        'max_family_candidates' => 650,
+        'max_rank_candidates' => 1400,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Production Entropy
     |--------------------------------------------------------------------------
     |

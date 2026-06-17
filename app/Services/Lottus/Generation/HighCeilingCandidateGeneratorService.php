@@ -885,6 +885,12 @@ class HighCeilingCandidateGeneratorService
         $limit = (int) config('lottus_main_learning.candidate_generation.elite_family_candidates', 1400);
         $limit = (int) round($limit * (float) ($learningContext['aggressiveness']['mutation_depth'] ?? 1.0));
 
+        if (! empty($weights['commercial_generation'])) {
+            $sweepLimit = min($sweepLimit, (int) config('lottus.commercial_generation.max_family_candidates', 650));
+            $doubleSweepLimit = min($doubleSweepLimit, 0);
+            $limit = min($limit, (int) config('lottus.commercial_generation.max_family_candidates', 650));
+        }
+
         $payloads = [];
         $seen = [];
 
