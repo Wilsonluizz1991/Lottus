@@ -18,6 +18,15 @@ class TriggerAdaptiveLearning
     public function handle(LotofacilConcursoSincronizado $event): void
     {
         try {
+            if (! (bool) config('lottus_fechamento.adaptive_learning.enabled', true)) {
+                Log::info('LOTTUS_ADAPTIVE_LEARNING_DISABLED', [
+                    'concurso' => $event->concurso,
+                    'triggered_by' => 'sync_event',
+                ]);
+
+                return;
+            }
+
             $run = $this->runService->enqueue(
                 concurso: $event->concurso,
                 triggeredBy: 'sync_event',

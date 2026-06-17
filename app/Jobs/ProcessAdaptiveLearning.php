@@ -21,6 +21,10 @@ class ProcessAdaptiveLearning implements ShouldQueue
 
     public function handle(AdaptiveLearningRunService $runService): void
     {
+        if (! (bool) config('lottus_fechamento.adaptive_learning.enabled', true)) {
+            return;
+        }
+
         $runService->processRun($this->learningRunId);
     }
 }

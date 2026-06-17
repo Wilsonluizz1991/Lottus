@@ -203,6 +203,10 @@ return [
         ],
     ],
 
+    'adaptive_learning' => [
+        'enabled' => (bool) env('LOTTUS_FECHAMENTO_LEARNING_ENABLED', true),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Metadata comercial
